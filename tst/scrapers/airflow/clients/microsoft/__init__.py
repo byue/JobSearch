@@ -1,0 +1,2 @@
+"""Microsoft airflow client tests."""
+

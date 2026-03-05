@@ -1,0 +1,205 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  scraper-db-init:
+    image: postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: airflow
+    volumes:
+      - ..:/opt/jobsearch
+    command: >
+      bash -c "
+      psql
+      -h postgres
+      -U airflow
+      -d airflow
+      -v ON_ERROR_STOP=1
+      -f /opt/jobsearch/src/sql/init.sql
+      "
+
+  airflow-init:
+    build:
+      context: ..
+      dockerfile: src/scrapers/airflow/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      scraper-db-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/jobsearch/src/scrapers/airflow/dags
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: >
+      bash -c "
+      airflow db migrate &&
+      airflow users create
+      --username $${AIRFLOW_ADMIN_USERNAME}
+      --password $${AIRFLOW_ADMIN_PASSWORD}
+      --firstname $${AIRFLOW_ADMIN_FIRSTNAME}
+      --lastname $${AIRFLOW_ADMIN_LASTNAME}
+      --role Admin
+      --email $${AIRFLOW_ADMIN_EMAIL}
+      || true
+      "
+
+  airflow-webserver:
+    build:
+      context: ..
+      dockerfile: src/scrapers/airflow/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      scraper-db-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/jobsearch/src/scrapers/airflow/dags
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: webserver
+    ports:
+      - "8080:8080"
+
+  airflow-scheduler:
+    build:
+      context: ..
+      dockerfile: src/scrapers/airflow/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      scraper-db-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/jobsearch/src/scrapers/airflow/dags
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: scheduler
+
+  proxy-producer:
+    build:
+      context: ..
+      dockerfile: src/scrapers/proxy/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+    command: python /opt/jobsearch/src/scrapers/proxy/proxy_producer.py
+
+  proxy-api:
+    build:
+      context: ..
+      dockerfile: src/scrapers/proxy/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+    command: uvicorn scrapers.proxy.proxy_api:app --host 0.0.0.0 --port 8090
+    ports:
+      - "8090:8090"
+
+  backend:
+    build:
+      context: ..
+      dockerfile: src/web/backend/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      scraper-db-init:
+        condition: service_completed_successfully
+    environment:
+      JOBSEARCH_DB_URL: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      JOBSEARCH_API_PAGE_SIZE: 25
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: src/web/frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  airflow_postgres_data:
+  airflow_logs:
+  airflow_plugins:

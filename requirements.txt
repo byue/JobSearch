@@ -1,0 +1,4 @@
+# Aggregated local/developer dependencies across services.
+-r src/web/backend/requirements.txt
+-r src/scrapers/proxy/requirements.txt
+-r src/scrapers/airflow/requirements.txt
