@@ -401,14 +401,23 @@ def job_scrapers_local_dag() -> None:
 
     @task(task_id="jobs_build_page_requests")
     def build_page_requests(first_pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        requests_out: list[dict[str, Any]] = []
+        pages_by_company: dict[str, int] = {}
+        company_order: list[str] = []
         for payload in first_pages:
             company = str(payload.get("company", "")).strip()
             pages_to_fetch = int(payload.get("pages_to_fetch", 0) or 0)
             if not company:
                 continue
-            for page in range(1, max(0, pages_to_fetch) + 1):
-                requests_out.append({"company": company, "page": page})
+            if company not in pages_by_company:
+                company_order.append(company)
+            pages_by_company[company] = max(0, pages_to_fetch)
+
+        requests_out: list[dict[str, Any]] = []
+        max_company_pages = max(pages_by_company.values(), default=0)
+        for page in range(1, max_company_pages + 1):
+            for company in company_order:
+                if pages_by_company.get(company, 0) >= page:
+                    requests_out.append({"company": company, "page": page})
         return requests_out
 
     @task(
@@ -566,6 +575,7 @@ def job_scrapers_local_dag() -> None:
     @task(task_id="jobs_build_detail_requests")
     def build_detail_requests(page_results: list[dict[str, Any]]) -> list[dict[str, str]]:
         job_ids_by_company: dict[str, list[str]] = {}
+        company_order: list[str] = []
 
         for page in page_results:
             if not bool(page.get("success", False)):
@@ -573,15 +583,20 @@ def job_scrapers_local_dag() -> None:
             company = str(page.get("company", "")).strip()
             if not company:
                 continue
+            if company not in job_ids_by_company:
+                company_order.append(company)
             company_ids = job_ids_by_company.setdefault(company, [])
             for job_id in page.get("job_ids", []):
                 if isinstance(job_id, str) and job_id and job_id not in company_ids:
                     company_ids.append(job_id)
 
         detail_requests: list[dict[str, str]] = []
-        for company, ids in job_ids_by_company.items():
-            for job_id in ids:
-                detail_requests.append({"company": company, "job_id": job_id})
+        max_company_jobs = max((len(ids) for ids in job_ids_by_company.values()), default=0)
+        for idx in range(max_company_jobs):
+            for company in company_order:
+                ids = job_ids_by_company.get(company, [])
+                if idx < len(ids):
+                    detail_requests.append({"company": company, "job_id": ids[idx]})
         return detail_requests
 
     @task(
