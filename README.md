@@ -45,6 +45,80 @@ JobSearch exists to deliver:
 - `integration/`: integration tests.
 
 ## Architecture (High Level)
+```mermaid
+flowchart TB
+    U[User Browser]
+    FE[Frontend<br/>React + Nginx]
+    BE[Backend API<br/>FastAPI]
+
+    AF_UI[Airflow Webserver]
+    AF_SCH[Airflow Scheduler]
+    SCR[Airflow Worker]
+    SRC[Company Career Sites]
+
+    PP[proxy-producer]
+    PA[proxy-api]
+    R[(Redis<br/>proxy queues)]
+    PX[External Proxy Sources]
+
+    DB[(Postgres)]
+    ES[(Elasticsearch)]
+
+    subgraph Data
+        direction LR
+        ES
+        DB
+    end
+
+    subgraph Web
+        direction TB
+        U
+        FE
+        BE
+    end
+
+    subgraph Proxy
+        direction TB
+        PX
+        PP
+        PA
+        R
+    end
+
+    subgraph Scraping
+        direction TB
+        AF_UI
+        AF_SCH
+        SCR
+        SRC
+    end
+
+    U --> FE
+    FE --> BE
+    BE -->|query| DB
+    DB -->|job data via API| BE
+    BE -.->|search/index queries| ES
+    ES -.->|ranked search results| BE
+    BE --> FE
+    FE --> U
+
+    AF_UI --> AF_SCH
+    AF_SCH --> SCR
+    SCR -->|fetch listings + details| SRC
+    PA <--> |lease/release + block/return| SCR
+
+    PX -->|proxy IP feeds| PP
+    PP -->|fill scoped proxy pools| R
+    PA <--> |manage proxy state| R
+    AF_SCH -->|proxy capacity sensor| PA
+
+    AF_SCH -->|create/update run status| DB
+    AF_SCH -->|stage scraped data| DB
+    AF_SCH -->|publish pointer after verification| DB
+    AF_SCH -.->|index published snapshot| ES
+
+```
+
 1. **Proxy layer**: `proxy-producer` continuously fills per-scope proxy queues; `proxy-api` leases/releases/blocks IPs.
 2. **Scraper layer**: Airflow runs scheduled company scrapers that lease proxies and accumulate `jobs` + `job_details` into a new run version.
 3. **Publish gate**: data is not marked published while the run is in progress; publish happens only after consistency checks succeed.
