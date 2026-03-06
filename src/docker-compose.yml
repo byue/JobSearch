@@ -24,6 +24,23 @@ services:
       timeout: 5s
       retries: 5
 
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   scraper-db-init:
     image: postgres:16
     depends_on:
@@ -51,6 +68,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       scraper-db-init:
         condition: service_completed_successfully
@@ -90,6 +109,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
       scraper-db-init:
@@ -120,6 +141,8 @@ services:
       redis:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
@@ -203,3 +226,4 @@ volumes:
   airflow_postgres_data:
   airflow_logs:
   airflow_plugins:
+  minio_data:

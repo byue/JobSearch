@@ -14,5 +14,6 @@ __pycache__/
 *$py.class
 
 .coverage
+**/coverage/**
 .vscode/
 .ruff_cache/
