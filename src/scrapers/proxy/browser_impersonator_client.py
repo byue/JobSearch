@@ -33,6 +33,8 @@ BROWSERS = [
     "safari15_5",
 ]
 
+TimeoutValue = float | tuple[float, float]
+
 
 def random_browser() -> str:
     return random.choice(BROWSERS)
@@ -71,7 +73,7 @@ def _http_error_for_status(*, status_code: int, url: str) -> requests.exceptions
 def curl_get(
     url: str,
     *,
-    timeout: float,
+    timeout: TimeoutValue,
     proxy: str | None = None,
     impersonate: str | None = None,
     use_random_browser: bool = False,
@@ -93,7 +95,7 @@ def curl_request(
     method: str,
     url: str,
     *,
-    timeout: float,
+    timeout: TimeoutValue,
     proxy: str | None = None,
     impersonate: str | None = None,
     use_random_browser: bool = False,
@@ -115,7 +117,7 @@ def browser_request(
     *,
     method: str,
     url: str,
-    timeout: float,
+    timeout: TimeoutValue,
     headers: Mapping[str, str] | None = None,
     proxies: Mapping[str, str] | None = None,
     data: Mapping[str, Any] | None = None,

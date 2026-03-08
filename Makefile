@@ -214,13 +214,19 @@ proxy-state:
 airflow-open:
 	@URL="http://localhost:8080"; \
 	HEALTH_URL="$$URL/health"; \
+	ready=0; \
 	echo "Waiting for Airflow UI to become ready..."; \
 	for i in $$(seq 1 30); do \
 		if command -v curl >/dev/null 2>&1 && curl -fsS "$$HEALTH_URL" >/dev/null 2>&1; then \
+			ready=1; \
 			break; \
 		fi; \
 		sleep 2; \
 	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "Airflow UI is not healthy yet: $$HEALTH_URL"; \
+		exit 1; \
+	fi; \
 	opened=0; \
 	if command -v wslview >/dev/null 2>&1; then \
 		wslview "$$URL" >/dev/null 2>&1 && opened=1; \

@@ -37,6 +37,15 @@ def require_env_float(name: str, minimum: float = 0.1) -> float:
     return parsed
 
 
+def require_env_bool(name: str) -> bool:
+    value = require_env(name).lower()
+    if value in {"1", "true", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "no", "n", "off"}:
+        return False
+    raise RuntimeError(f"Environment variable must be a boolean: {name}={value!r}")
+
+
 def env_int(name: str, default: int, minimum: int = 1) -> int:
     raw = os.getenv(name)
     if raw is None:

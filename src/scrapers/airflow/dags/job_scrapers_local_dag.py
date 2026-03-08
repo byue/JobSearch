@@ -6,25 +6,28 @@ import json
 import logging
 import math
 import os
-import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
-
-import requests
+from typing import Any
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowFailException
 from airflow.operators.python import get_current_context
 from airflow.sensors.python import PythonSensor
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
 
+from scrapers.airflow.dags.job_scrapers_db import (
+    fetch_consistency_counts,
+    mark_missing_details,
+    publish_jobs_catalog_pointer,
+    update_publish_run_status,
+    upsert_companies,
+    upsert_job_details,
+    upsert_jobs,
+    upsert_publish_run_in_progress,
+)
 from scrapers.airflow.clients.client_factory import build_client
-from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
-from scrapers.common.env import env_bool, env_float, env_int, require_env
+from scrapers.common.env import require_env, require_env_bool, require_env_float, require_env_int
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 LOGGER = logging.getLogger(__name__)
@@ -39,18 +42,16 @@ def _resolve_proxy_scopes(companies: list[str]) -> list[str]:
 
 
 def _resolve_max_pages() -> int | None:
-    raw = os.getenv("JOBSEARCH_AIRFLOW_MAX_PAGES")
-    if raw is None:
-        return 1
-    try:
-        parsed = int(raw.strip())
-    except ValueError:
-        return 1
+    raw = os.getenv("JOBSEARCH_AIRFLOW_MAX_PAGES", "0")
+    parsed = int(raw.strip())
     if parsed == 0:
         return None
-    if parsed < 0:
-        return 1
     return parsed
+
+
+def _resolve_schedule() -> str:
+    hours = require_env_int("JOBSEARCH_AIRFLOW_SCHEDULE_HOURS", minimum=1)
+    return f"0 */{hours} * * *"
 
 
 def _resolve_total_pages(response: Any, max_pages: int | None) -> int:
@@ -74,63 +75,6 @@ def _resolve_total_pages(response: Any, max_pages: int | None) -> int:
     return 1
 
 
-def _call_with_proxy_retry(
-    *,
-    fn: Callable[[], Any],
-    attempts: int,
-    backoff_seconds: float,
-    operation_context: str,
-) -> Any:
-    last_error: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        LOGGER.info(
-            "proxy_attempt_start context=%s attempt=%s/%s",
-            operation_context,
-            attempt,
-            attempts,
-        )
-        try:
-            result = fn()
-            return result
-        except Exception as exc:
-            last_error = exc
-            LOGGER.warning(
-                "proxy_attempt_failed context=%s attempt=%s/%s error=%s",
-                operation_context,
-                attempt,
-                attempts,
-                f"{type(exc).__name__}: {exc}",
-            )
-            if attempt >= attempts:
-                break
-            if isinstance(
-                exc,
-                (
-                    requests.exceptions.RequestException,
-                    requests.exceptions.ProxyError,
-                    RetryableUpstreamError,
-                ),
-            ):
-                time.sleep(backoff_seconds * attempt)
-                continue
-            break
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("Proxy retry exhausted without captured error")
-
-
-def _normalize_db_url(raw_url: str) -> str:
-    normalized = raw_url.strip()
-    if not normalized:
-        raise ValueError("DB URL must be non-empty")
-    # Airflow commonly uses postgresql+psycopg2://; keep it SQLAlchemy-compatible.
-    return normalized
-
-
-def _db_engine(db_url: str) -> Engine:
-    return create_engine(_normalize_db_url(db_url), poolclass=NullPool, future=True)
-
-
 def _to_json(value: Any) -> str | None:
     if value is None:
         return None
@@ -140,13 +84,13 @@ def _to_json(value: Any) -> str | None:
 @dag(
     dag_id="job_scrapers_local",
     description="Run mapped job scraping pipeline and publish DB snapshot pointer.",
-    schedule="0 */4 * * *",
+    schedule=_resolve_schedule(),
     start_date=datetime(2026, 1, 1),
     catchup=False,
     default_args={
         "owner": "jobsearch",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=2),
+        "retries": require_env_int("JOBSEARCH_AIRFLOW_TASK_RETRIES", minimum=0),
+        "retry_delay": timedelta(seconds=require_env_int("JOBSEARCH_AIRFLOW_TASK_RETRY_DELAY_SECONDS", minimum=1)),
     },
     tags=["jobsearch", "scrapers", "local"],
 )
@@ -154,32 +98,27 @@ def job_scrapers_local_dag() -> None:
     companies = _resolve_companies()
     proxy_scopes = _resolve_proxy_scopes(companies)
     max_pages = _resolve_max_pages()
-    proxy_retry_attempts = env_int("JOBSEARCH_AIRFLOW_PROXY_RETRY_ATTEMPTS", default=6, minimum=1)
-    proxy_retry_backoff_seconds = env_float(
-        "JOBSEARCH_AIRFLOW_PROXY_RETRY_BACKOFF_SECONDS", default=2.0, minimum=0.2
-    )
-    client_timeout_seconds = env_int(
-        "JOBSEARCH_AIRFLOW_CLIENT_TIMEOUT_SECONDS",
-        default=env_int("JOBSEARCH_AIRFLOW_META_TIMEOUT_SECONDS", default=20, minimum=1),
-        minimum=1,
-    )
-    client_max_retries = env_int("JOBSEARCH_AIRFLOW_CLIENT_MAX_RETRIES", default=5, minimum=1)
-    client_backoff_factor = env_float("JOBSEARCH_AIRFLOW_CLIENT_BACKOFF_FACTOR", default=0.5, minimum=0.0)
-    client_max_backoff_seconds = env_float(
-        "JOBSEARCH_AIRFLOW_CLIENT_MAX_BACKOFF_SECONDS",
-        default=6.0,
-        minimum=0.0,
-    )
-    client_backoff_jitter = env_bool("JOBSEARCH_AIRFLOW_CLIENT_BACKOFF_JITTER", default=False)
-    fail_on_company_error = env_bool("JOBSEARCH_AIRFLOW_FAIL_ON_COMPANY_ERROR", default=False)
+    client_request_timeout_seconds = require_env_float("JOBSEARCH_AIRFLOW_CLIENT_REQUEST_TIMEOUT_SECONDS", minimum=0.1)
+    client_connect_timeout_seconds = require_env_float("JOBSEARCH_AIRFLOW_CLIENT_CONNECT_TIMEOUT_SECONDS", minimum=0.1)
+    client_max_retries = require_env_int("JOBSEARCH_AIRFLOW_CLIENT_MAX_RETRIES", minimum=1)
+    client_backoff_factor = require_env_float("JOBSEARCH_AIRFLOW_CLIENT_BACKOFF_FACTOR", minimum=0.0)
+    client_max_backoff_seconds = require_env_float("JOBSEARCH_AIRFLOW_CLIENT_MAX_BACKOFF_SECONDS", minimum=0.0)
+    client_backoff_jitter = require_env_bool("JOBSEARCH_AIRFLOW_CLIENT_BACKOFF_JITTER")
 
     proxy_api_url = require_env("JOBSEARCH_PROXY_API_URL")
-    proxy_api_timeout_seconds = env_float("JOBSEARCH_PROXY_API_TIMEOUT_SECONDS", default=10.0, minimum=0.2)
-    proxy_sensor_poke_seconds = env_int("JOBSEARCH_AIRFLOW_PROXY_SENSOR_POKE_SECONDS", default=20, minimum=1)
-    proxy_sensor_timeout_seconds = env_int("JOBSEARCH_AIRFLOW_PROXY_SENSOR_TIMEOUT_SECONDS", default=1800, minimum=5)
-    proxy_min_available_total = env_int("JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_TOTAL", default=24, minimum=1)
-    proxy_min_available_per_scope = env_int("JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_PER_SCOPE", default=3, minimum=1)
-    proxy_sensor_soft_fail = env_bool("JOBSEARCH_AIRFLOW_PROXY_SENSOR_SOFT_FAIL", default=False)
+    proxy_api_timeout_seconds = require_env_float("JOBSEARCH_PROXY_API_TIMEOUT_SECONDS", minimum=0.2)
+    proxy_lease_acquire_timeout_seconds = require_env_float(
+        "JOBSEARCH_PROXY_LEASE_ACQUIRE_TIMEOUT_SECONDS",
+        minimum=0.1,
+    )
+    proxy_lease_poll_interval_seconds = require_env_float(
+        "JOBSEARCH_PROXY_LEASE_POLL_INTERVAL_SECONDS",
+        minimum=0.01,
+    )
+    proxy_sensor_poke_seconds = require_env_int("JOBSEARCH_AIRFLOW_PROXY_SENSOR_POKE_SECONDS", minimum=1)
+    proxy_sensor_timeout_seconds = require_env_int("JOBSEARCH_AIRFLOW_PROXY_SENSOR_TIMEOUT_SECONDS", minimum=5)
+    proxy_min_available_per_scope = require_env_int("JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_PER_SCOPE", minimum=1)
+    proxy_sensor_soft_fail = require_env_bool("JOBSEARCH_AIRFLOW_PROXY_SENSOR_SOFT_FAIL")
 
     db_url = require_env("JOBSEARCH_DB_URL")
 
@@ -187,11 +126,14 @@ def job_scrapers_local_dag() -> None:
         return ProxyManagementClient(
             base_url=proxy_api_url,
             timeout_seconds=proxy_api_timeout_seconds,
+            lease_acquire_timeout_seconds=proxy_lease_acquire_timeout_seconds,
+            lease_poll_interval_seconds=proxy_lease_poll_interval_seconds,
         )
 
     def _build_default_request_policy() -> RequestPolicy:
         return RequestPolicy(
-            timeout_seconds=float(client_timeout_seconds),
+            timeout_seconds=float(client_request_timeout_seconds),
+            connect_timeout_seconds=float(client_connect_timeout_seconds),
             max_retries=client_max_retries,
             backoff_factor=client_backoff_factor,
             max_backoff_seconds=client_max_backoff_seconds,
@@ -234,18 +176,16 @@ def job_scrapers_local_dag() -> None:
             if available < proxy_min_available_per_scope:
                 scope_shortages.append(scope)
 
-        total_ready = total_available >= proxy_min_available_total
         scopes_ready = not scope_shortages
-        ready = total_ready and scopes_ready
+        ready = scopes_ready
 
         LOGGER.info(
             "proxy_capacity_check ready=%s total_available=%s total_inuse=%s total_blocked=%s "
-            "min_total=%s min_per_scope=%s shortages=%s scope_available=%s",
+            "min_per_scope=%s shortages=%s scope_available=%s",
             ready,
             total_available,
             total_inuse,
             total_blocked,
-            proxy_min_available_total,
             proxy_min_available_per_scope,
             ",".join(scope_shortages) if scope_shortages else "-",
             json.dumps(scope_available, sort_keys=True),
@@ -263,57 +203,7 @@ def job_scrapers_local_dag() -> None:
         else:
             version_ts = datetime.now(timezone.utc)
 
-        engine = _db_engine(db_url)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO publish_runs (
-                            run_id,
-                            version_ts,
-                            status,
-                            db_ready,
-                            db_published_at,
-                            db_error_message,
-                            es_ready,
-                            es_published_at,
-                            es_error_message,
-                            created_at,
-                            updated_at
-                        )
-                        VALUES (
-                            :run_id,
-                            :version_ts,
-                            'in_progress',
-                            FALSE,
-                            NULL,
-                            NULL,
-                            FALSE,
-                            NULL,
-                            NULL,
-                            now(),
-                            now()
-                        )
-                        ON CONFLICT (run_id) DO UPDATE
-                        SET version_ts = EXCLUDED.version_ts,
-                            status = 'in_progress',
-                            db_ready = FALSE,
-                            db_published_at = NULL,
-                            db_error_message = NULL,
-                            es_ready = FALSE,
-                            es_published_at = NULL,
-                            es_error_message = NULL,
-                            updated_at = now()
-                        """
-                    ),
-                    {
-                        "run_id": run_id,
-                        "version_ts": version_ts,
-                    },
-                )
-        finally:
-            engine.dispose()
+        upsert_publish_run_in_progress(db_url, run_id=run_id, version_ts=version_ts)
 
         return {"run_id": run_id, "version_ts": version_ts.isoformat()}
 
@@ -332,36 +222,7 @@ def job_scrapers_local_dag() -> None:
             for company in companies
         ]
 
-        engine = _db_engine(db_url)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO companies (
-                            run_id,
-                            version_ts,
-                            company,
-                            display_name,
-                            updated_at
-                        )
-                        VALUES (
-                            :run_id,
-                            :version_ts,
-                            :company,
-                            :display_name,
-                            now()
-                        )
-                        ON CONFLICT (run_id, company) DO UPDATE
-                        SET version_ts = EXCLUDED.version_ts,
-                            display_name = EXCLUDED.display_name,
-                            updated_at = now()
-                        """
-                    ),
-                    rows,
-                )
-        finally:
-            engine.dispose()
+        upsert_companies(db_url, rows=rows)
 
     @task(
         task_id="jobs_get_first_page",
@@ -374,48 +235,28 @@ def job_scrapers_local_dag() -> None:
             proxy_management_client=proxy_management_client,
             default_request_policy=_build_default_request_policy(),
         )
-
-        try:
-            response = _call_with_proxy_retry(
-                fn=lambda: scraper_client.get_jobs(page=1),
-                attempts=proxy_retry_attempts,
-                backoff_seconds=proxy_retry_backoff_seconds,
-                operation_context=f"{company}:get_jobs:page=1",
-            )
-            pages_to_fetch = 1 if company == "meta" else _resolve_total_pages(response, max_pages=max_pages)
-            return {
-                "company": company,
-                "pages_to_fetch": int(pages_to_fetch),
-                "success": True,
-                "error": None,
-            }
-        except Exception as exc:
-            if fail_on_company_error:
-                raise
-            return {
-                "company": company,
-                "pages_to_fetch": 0,
-                "success": False,
-                "error": f"{type(exc).__name__}: {exc}",
-            }
+        response = scraper_client.get_jobs(page=1)
+        pages_to_fetch = _resolve_total_pages(response, max_pages=max_pages)
+        return {
+            "company": company,
+            "pages_to_fetch": int(pages_to_fetch),
+            "success": True,
+            "error": None,
+        }
 
     @task(task_id="jobs_build_page_requests")
     def build_page_requests(first_pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        pages_by_company: dict[str, int] = {}
-        company_order: list[str] = []
+        pages_by_company: dict[str, int] = {company: 0 for company in companies}
         for payload in first_pages:
-            company = str(payload.get("company", "")).strip()
-            pages_to_fetch = int(payload.get("pages_to_fetch", 0) or 0)
-            if not company:
-                continue
-            if company not in pages_by_company:
-                company_order.append(company)
-            pages_by_company[company] = max(0, pages_to_fetch)
+            company = str(payload["company"]).strip()
+            pages_to_fetch = int(payload["pages_to_fetch"])
+            if company in pages_by_company:
+                pages_by_company[company] = max(0, pages_to_fetch)
 
         requests_out: list[dict[str, Any]] = []
         max_company_pages = max(pages_by_company.values(), default=0)
         for page in range(1, max_company_pages + 1):
-            for company in company_order:
+            for company in companies:
                 if pages_by_company.get(company, 0) >= page:
                     requests_out.append({"company": company, "page": page})
         return requests_out
@@ -434,167 +275,90 @@ def job_scrapers_local_dag() -> None:
             default_request_policy=_build_default_request_policy(),
         )
 
-        try:
-            response = _call_with_proxy_retry(
-                fn=lambda: scraper_client.get_jobs(page=page),
-                attempts=proxy_retry_attempts,
-                backoff_seconds=proxy_retry_backoff_seconds,
-                operation_context=f"{company}:get_jobs:page={page}",
+        response = scraper_client.get_jobs(page=page)
+
+        jobs_payload: list[dict[str, Any]] = []
+        for job in (response.jobs or []):
+            raw_id = getattr(job, "id", None)
+            if not raw_id:
+                raise ValueError(f"Missing job id in jobs response for company={company} page={page}")
+            job_id = str(raw_id).strip()
+            if not job_id:
+                raise ValueError(f"Empty job id in jobs response for company={company} page={page}")
+            locations = list(getattr(job, "locations", []) or [])
+            city = state = country = None
+            if locations:
+                loc = locations[0]
+                city = str(getattr(loc, "city", "") or "").strip() or None
+                state = str(getattr(loc, "state", "") or "").strip() or None
+                country = str(getattr(loc, "country", "") or "").strip() or None
+            posted_ts = getattr(job, "postedTs", None)
+            jobs_payload.append(
+                {
+                    "job_id": job_id,
+                    "title": str(getattr(job, "name", "") or "").strip() or None,
+                    "details_url": str(getattr(job, "detailsUrl", "") or "").strip() or None,
+                    "apply_url": str(getattr(job, "applyUrl", "") or "").strip() or None,
+                    "city": city,
+                    "state": state,
+                    "country": country,
+                    "posted_ts": int(posted_ts) if isinstance(posted_ts, int) else None,
+                }
             )
 
-            jobs_payload: list[dict[str, Any]] = []
-            for job in (response.jobs or []):
-                raw_id = getattr(job, "id", None)
-                if not raw_id:
-                    continue
-                job_id = str(raw_id).strip()
-                if not job_id:
-                    continue
-                locations = list(getattr(job, "locations", []) or [])
-                city = state = country = None
-                if locations:
-                    loc = locations[0]
-                    city = str(getattr(loc, "city", "") or "").strip() or None
-                    state = str(getattr(loc, "state", "") or "").strip() or None
-                    country = str(getattr(loc, "country", "") or "").strip() or None
-                posted_ts = getattr(job, "postedTs", None)
-                jobs_payload.append(
-                    {
-                        "job_id": job_id,
-                        "title": str(getattr(job, "name", "") or "").strip() or None,
-                        "details_url": str(getattr(job, "detailsUrl", "") or "").strip() or None,
-                        "apply_url": str(getattr(job, "applyUrl", "") or "").strip() or None,
-                        "city": city,
-                        "state": state,
-                        "country": country,
-                        "posted_ts": int(posted_ts) if isinstance(posted_ts, int) else None,
-                    }
-                )
+        rows: list[dict[str, Any]] = []
+        for job in jobs_payload:
+            posted_ts_raw = job.get("posted_ts")
+            rows.append(
+                {
+                    "run_id": run_id,
+                    "version_ts": version_ts,
+                    "company": company,
+                    "external_job_id": str(job.get("job_id", "")).strip(),
+                    "title": job.get("title"),
+                    "details_url": job.get("details_url"),
+                    "apply_url": job.get("apply_url"),
+                    "city": job.get("city"),
+                    "state": job.get("state"),
+                    "country": job.get("country"),
+                    "posted_ts": (
+                        datetime.fromtimestamp(int(posted_ts_raw), tz=timezone.utc)
+                        if isinstance(posted_ts_raw, int)
+                        else None
+                    ),
+                }
+            )
+        rows = [row for row in rows if row["external_job_id"]]
 
-            rows: list[dict[str, Any]] = []
-            for job in jobs_payload:
-                posted_ts_raw = job.get("posted_ts")
-                rows.append(
-                    {
-                        "run_id": run_id,
-                        "version_ts": version_ts,
-                        "company": company,
-                        "external_job_id": str(job.get("job_id", "")).strip(),
-                        "title": job.get("title"),
-                        "details_url": job.get("details_url"),
-                        "apply_url": job.get("apply_url"),
-                        "city": job.get("city"),
-                        "state": job.get("state"),
-                        "country": job.get("country"),
-                        "posted_ts": (
-                            datetime.fromtimestamp(int(posted_ts_raw), tz=timezone.utc)
-                            if isinstance(posted_ts_raw, int)
-                            else None
-                        ),
-                    }
-                )
-            rows = [row for row in rows if row["external_job_id"]]
+        upsert_jobs(db_url, rows=rows)
 
-            if rows:
-                engine = _db_engine(db_url)
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                """
-                                INSERT INTO jobs (
-                                    run_id,
-                                    version_ts,
-                                    company,
-                                    external_job_id,
-                                    title,
-                                    details_url,
-                                    apply_url,
-                                    city,
-                                    state,
-                                    country,
-                                    posted_ts,
-                                    is_missing_details,
-                                    updated_at
-                                )
-                                VALUES (
-                                    :run_id,
-                                    :version_ts,
-                                    :company,
-                                    :external_job_id,
-                                    :title,
-                                    :details_url,
-                                    :apply_url,
-                                    :city,
-                                    :state,
-                                    :country,
-                                    :posted_ts,
-                                    FALSE,
-                                    now()
-                                )
-                                ON CONFLICT (run_id, company, external_job_id) DO UPDATE
-                                SET version_ts = EXCLUDED.version_ts,
-                                    title = EXCLUDED.title,
-                                    details_url = EXCLUDED.details_url,
-                                    apply_url = EXCLUDED.apply_url,
-                                    city = EXCLUDED.city,
-                                    state = EXCLUDED.state,
-                                    country = EXCLUDED.country,
-                                    posted_ts = EXCLUDED.posted_ts,
-                                    is_missing_details = FALSE,
-                                    updated_at = now()
-                                """
-                            ),
-                            rows,
-                        )
-                finally:
-                    engine.dispose()
-
-            return {
-                "company": company,
-                "page": page,
-                "jobs_seen": len(jobs_payload),
-                "job_ids": [item["job_id"] for item in jobs_payload],
-                "jobs_written": len(rows),
-                "error": response.error,
-                "success": True,
-            }
-        except Exception as exc:
-            if fail_on_company_error:
-                raise
-            return {
-                "company": company,
-                "page": page,
-                "jobs_seen": 0,
-                "job_ids": [],
-                "jobs_written": 0,
-                "error": f"{type(exc).__name__}: {exc}",
-                "success": False,
-            }
+        return {
+            "company": company,
+            "page": page,
+            "jobs_seen": len(jobs_payload),
+            "job_ids": [item["job_id"] for item in jobs_payload],
+            "jobs_written": len(rows),
+            "error": response.error,
+            "success": True,
+        }
 
     @task(task_id="jobs_build_detail_requests")
     def build_detail_requests(page_results: list[dict[str, Any]]) -> list[dict[str, str]]:
-        job_ids_by_company: dict[str, list[str]] = {}
-        company_order: list[str] = []
+        job_ids_by_company: dict[str, set[str]] = {company: set() for company in companies}
 
         for page in page_results:
-            if not bool(page.get("success", False)):
-                continue
-            company = str(page.get("company", "")).strip()
-            if not company:
-                continue
-            if company not in job_ids_by_company:
-                company_order.append(company)
-            company_ids = job_ids_by_company.setdefault(company, [])
-            for job_id in page.get("job_ids", []):
-                if isinstance(job_id, str) and job_id and job_id not in company_ids:
-                    company_ids.append(job_id)
+            company = str(page["company"]).strip()
+            if company in job_ids_by_company:
+                company_ids = job_ids_by_company[company]
+                for job_id in page["job_ids"]:
+                    company_ids.add(job_id)
 
         detail_requests: list[dict[str, str]] = []
-        max_company_jobs = max((len(ids) for ids in job_ids_by_company.values()), default=0)
+        ids_by_company = {company: sorted(ids) for company, ids in job_ids_by_company.items()}
+        max_company_jobs = max((len(ids) for ids in ids_by_company.values()), default=0)
         for idx in range(max_company_jobs):
-            for company in company_order:
-                ids = job_ids_by_company.get(company, [])
+            for company in companies:
+                ids = ids_by_company.get(company, [])
                 if idx < len(ids):
                     detail_requests.append({"company": company, "job_id": ids[idx]})
         return detail_requests
@@ -613,152 +377,64 @@ def job_scrapers_local_dag() -> None:
             default_request_policy=_build_default_request_policy(),
         )
 
-        try:
-            response = _call_with_proxy_retry(
-                fn=lambda: scraper_client.get_job_details(job_id=job_id),
-                attempts=proxy_retry_attempts,
-                backoff_seconds=proxy_retry_backoff_seconds,
-                operation_context=f"{company}:get_job_details:job_id={job_id}",
+        response = scraper_client.get_job_details(job_id=job_id)
+        status = int(response.status) if response.status is not None else 500
+        if status == 404:
+            mark_missing_details(
+                db_url,
+                run_id=run_id,
+                company=company,
+                external_job_id=job_id,
             )
-            status = int(response.status) if response.status is not None else 500
-            if status == 404:
-                engine = _db_engine(db_url)
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                """
-                                UPDATE jobs
-                                SET is_missing_details = TRUE,
-                                    updated_at = now()
-                                WHERE run_id = :run_id
-                                  AND company = :company
-                                  AND external_job_id = :external_job_id
-                                """
-                            ),
-                            {
-                                "run_id": run_id,
-                                "company": company,
-                                "external_job_id": job_id,
-                            },
-                        )
-                finally:
-                    engine.dispose()
-                return {
-                    "company": company,
-                    "job_id": job_id,
-                    "success": True,
-                    "error": response.error,
-                    "job_detail_written": False,
-                }
-            success = 200 <= status < 300 and response.job is not None
-            job_payload: dict[str, Any] | None = None
-            if success and response.job is not None:
-                pay_details = response.job.payDetails.model_dump(mode="json") if response.job.payDetails else None
-                posted_ts = getattr(response.job, "postedTs", None)
-                job_payload = {
-                    "job_description": response.job.jobDescription,
-                    "minimum_qualifications": list(response.job.minimumQualifications or []),
-                    "preferred_qualifications": list(response.job.preferredQualifications or []),
-                    "responsibilities": list(response.job.responsibilities or []),
-                    "pay_details": pay_details,
-                    "posted_ts_from_details": int(posted_ts) if isinstance(posted_ts, int) else None,
-                }
-
-                detail_row = {
-                    "run_id": run_id,
-                    "version_ts": version_ts,
-                    "company": company,
-                    "external_job_id": job_id,
-                    "job_description": job_payload.get("job_description"),
-                    "minimum_qualifications": _to_json(job_payload.get("minimum_qualifications")),
-                    "preferred_qualifications": _to_json(job_payload.get("preferred_qualifications")),
-                    "responsibilities": _to_json(job_payload.get("responsibilities")),
-                    "pay_details": _to_json(job_payload.get("pay_details")),
-                }
-                posted_ts_raw = job_payload.get("posted_ts_from_details")
-
-                engine = _db_engine(db_url)
-                try:
-                    with engine.begin() as conn:
-                        conn.execute(
-                            text(
-                                """
-                                INSERT INTO job_details (
-                                    run_id,
-                                    version_ts,
-                                    company,
-                                    external_job_id,
-                                    job_description,
-                                    minimum_qualifications,
-                                    preferred_qualifications,
-                                    responsibilities,
-                                    pay_details,
-                                    updated_at
-                                )
-                                VALUES (
-                                    :run_id,
-                                    :version_ts,
-                                    :company,
-                                    :external_job_id,
-                                    :job_description,
-                                    CAST(:minimum_qualifications AS JSONB),
-                                    CAST(:preferred_qualifications AS JSONB),
-                                    CAST(:responsibilities AS JSONB),
-                                    CAST(:pay_details AS JSONB),
-                                    now()
-                                )
-                                ON CONFLICT (run_id, company, external_job_id) DO UPDATE
-                                SET version_ts = EXCLUDED.version_ts,
-                                    job_description = EXCLUDED.job_description,
-                                    minimum_qualifications = EXCLUDED.minimum_qualifications,
-                                    preferred_qualifications = EXCLUDED.preferred_qualifications,
-                                    responsibilities = EXCLUDED.responsibilities,
-                                    pay_details = EXCLUDED.pay_details,
-                                    updated_at = now()
-                                """
-                            ),
-                            detail_row,
-                        )
-
-                        if isinstance(posted_ts_raw, int):
-                            conn.execute(
-                                text(
-                                    """
-                                    UPDATE jobs
-                                    SET posted_ts = COALESCE(jobs.posted_ts, :posted_ts),
-                                        updated_at = now()
-                                    WHERE run_id = :run_id
-                                      AND company = :company
-                                      AND external_job_id = :external_job_id
-                                    """
-                                ),
-                                {
-                                    "run_id": run_id,
-                                    "company": company,
-                                    "external_job_id": job_id,
-                                    "posted_ts": datetime.fromtimestamp(posted_ts_raw, tz=timezone.utc),
-                                },
-                            )
-                finally:
-                    engine.dispose()
             return {
                 "company": company,
                 "job_id": job_id,
-                "success": success,
+                "success": True,
                 "error": response.error,
-                "job_detail_written": bool(success and job_payload is not None),
-            }
-        except Exception as exc:
-            if fail_on_company_error:
-                raise
-            return {
-                "company": company,
-                "job_id": job_id,
-                "success": False,
-                "error": f"{type(exc).__name__}: {exc}",
                 "job_detail_written": False,
             }
+        success = 200 <= status < 300 and response.job is not None
+        job_payload: dict[str, Any] | None = None
+        if success and response.job is not None:
+            pay_details = response.job.payDetails.model_dump(mode="json") if response.job.payDetails else None
+            posted_ts = getattr(response.job, "postedTs", None)
+            job_payload = {
+                "job_description": response.job.jobDescription,
+                "minimum_qualifications": list(response.job.minimumQualifications or []),
+                "preferred_qualifications": list(response.job.preferredQualifications or []),
+                "responsibilities": list(response.job.responsibilities or []),
+                "pay_details": pay_details,
+                "posted_ts_from_details": int(posted_ts) if isinstance(posted_ts, int) else None,
+            }
+
+            detail_row = {
+                "run_id": run_id,
+                "version_ts": version_ts,
+                "company": company,
+                "external_job_id": job_id,
+                "job_description": job_payload.get("job_description"),
+                "minimum_qualifications": _to_json(job_payload.get("minimum_qualifications")),
+                "preferred_qualifications": _to_json(job_payload.get("preferred_qualifications")),
+                "responsibilities": _to_json(job_payload.get("responsibilities")),
+                "pay_details": _to_json(job_payload.get("pay_details")),
+            }
+            posted_ts_raw = job_payload.get("posted_ts_from_details")
+            upsert_job_details(
+                db_url,
+                detail_row=detail_row,
+                posted_ts=(
+                    datetime.fromtimestamp(posted_ts_raw, tz=timezone.utc)
+                    if isinstance(posted_ts_raw, int)
+                    else None
+                ),
+            )
+        return {
+            "company": company,
+            "job_id": job_id,
+            "success": success,
+            "error": response.error,
+            "job_detail_written": bool(success and job_payload is not None),
+        }
 
     @task(task_id="verify_db_consistency")
     def verify_db_consistency(
@@ -770,14 +446,9 @@ def job_scrapers_local_dag() -> None:
 
         expected_jobs_ids_by_company: dict[str, set[str]] = {company: set() for company in companies}
         for page in page_results:
-            if not bool(page.get("success", False)):
-                continue
             company = str(page.get("company", "")).strip()
-            if company not in expected_jobs_ids_by_company:
-                continue
             for job_id in page.get("job_ids", []):
-                if isinstance(job_id, str) and job_id:
-                    expected_jobs_ids_by_company[company].add(job_id)
+                expected_jobs_ids_by_company[company].add(job_id)
         expected_jobs_by_company: dict[str, int] = {
             company: len(job_ids) for company, job_ids in expected_jobs_ids_by_company.items()
         }
@@ -788,78 +459,16 @@ def job_scrapers_local_dag() -> None:
             if company in expected_detail_jobs_by_company:
                 expected_detail_jobs_by_company[company] += 1
 
-        jobs_count_by_company: dict[str, int] = {company: 0 for company in companies}
-        missing_details_by_company: dict[str, int] = {company: 0 for company in companies}
-        details_count_by_company: dict[str, int] = {company: 0 for company in companies}
-        missing_description_by_company: dict[str, int] = {company: 0 for company in companies}
-
-        engine = _db_engine(db_url)
-        try:
-            with engine.begin() as conn:
-                jobs_rows = conn.execute(
-                    text(
-                        """
-                        SELECT
-                          company,
-                          COUNT(*) FILTER (WHERE NOT is_missing_details) AS cnt,
-                          COUNT(*) FILTER (WHERE is_missing_details) AS missing_cnt
-                        FROM jobs
-                        WHERE run_id = :run_id
-                        GROUP BY company
-                        """
-                    ),
-                    {"run_id": run_id},
-                ).mappings()
-                for row in jobs_rows:
-                    company = str(row["company"])
-                    if company in jobs_count_by_company:
-                        jobs_count_by_company[company] = int(row["cnt"])
-                        missing_details_by_company[company] = int(row["missing_cnt"])
-
-                details_rows = conn.execute(
-                    text(
-                        """
-                        SELECT d.company, COUNT(*) AS cnt
-                        FROM job_details d
-                        JOIN jobs j
-                          ON j.run_id = d.run_id
-                         AND j.company = d.company
-                         AND j.external_job_id = d.external_job_id
-                        WHERE d.run_id = :run_id
-                          AND j.is_missing_details = FALSE
-                        GROUP BY d.company
-                        """
-                    ),
-                    {"run_id": run_id},
-                ).mappings()
-                for row in details_rows:
-                    company = str(row["company"])
-                    if company in details_count_by_company:
-                        details_count_by_company[company] = int(row["cnt"])
-
-                missing_desc_rows = conn.execute(
-                    text(
-                        """
-                        SELECT d.company, COUNT(*) AS cnt
-                        FROM job_details d
-                        JOIN jobs j
-                          ON j.run_id = d.run_id
-                         AND j.company = d.company
-                         AND j.external_job_id = d.external_job_id
-                        WHERE d.run_id = :run_id
-                          AND j.is_missing_details = FALSE
-                          AND (d.job_description IS NULL OR btrim(d.job_description) = '')
-                        GROUP BY d.company
-                        """
-                    ),
-                    {"run_id": run_id},
-                ).mappings()
-                for row in missing_desc_rows:
-                    company = str(row["company"])
-                    if company in missing_description_by_company:
-                        missing_description_by_company[company] = int(row["cnt"])
-        finally:
-            engine.dispose()
+        (
+            jobs_count_by_company,
+            missing_details_by_company,
+            details_count_by_company,
+            missing_description_by_company,
+        ) = fetch_consistency_counts(
+            db_url,
+            run_id=run_id,
+            companies=companies,
+        )
 
         violations: list[str] = []
         for company in companies:
@@ -938,29 +547,13 @@ def job_scrapers_local_dag() -> None:
         db_ready = not failed
         db_error_message = " | ".join(errors[:5]) if failed else None
 
-        engine = _db_engine(db_url)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        UPDATE publish_runs
-                        SET status = :status,
-                            db_ready = :db_ready,
-                            db_error_message = :db_error_message,
-                            updated_at = now()
-                        WHERE run_id = :run_id
-                        """
-                    ),
-                    {
-                        "run_id": run_id,
-                        "status": status,
-                        "db_ready": db_ready,
-                        "db_error_message": db_error_message,
-                    },
-                )
-        finally:
-            engine.dispose()
+        update_publish_run_status(
+            db_url,
+            run_id=run_id,
+            status=status,
+            db_ready=db_ready,
+            db_error_message=db_error_message,
+        )
 
         if failed:
             raise AirflowFailException(
@@ -984,35 +577,7 @@ def job_scrapers_local_dag() -> None:
                 publish_state.get("status"),
             )
             return {"published": False, "run_id": run_id}
-
-        engine = _db_engine(db_url)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO publication_pointers (namespace, run_id, updated_at)
-                        VALUES ('jobs_catalog', :run_id, now())
-                        ON CONFLICT (namespace) DO UPDATE
-                        SET run_id = EXCLUDED.run_id,
-                            updated_at = now()
-                        """
-                    ),
-                    {"run_id": run_id},
-                )
-                conn.execute(
-                    text(
-                        """
-                        UPDATE publish_runs
-                        SET db_published_at = now(),
-                            updated_at = now()
-                        WHERE run_id = :run_id
-                        """
-                    ),
-                    {"run_id": run_id},
-                )
-        finally:
-            engine.dispose()
+        publish_jobs_catalog_pointer(db_url, run_id=run_id)
 
         return {"published": True, "run_id": run_id}
 

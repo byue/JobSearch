@@ -41,24 +41,13 @@ class ProxyApiTest(unittest.TestCase):
         self.assertEqual(kwargs["blocked_ttl_seconds"], 30)
         self.assertEqual(kwargs["max_attempts"], 12)
 
-    def test_import_falls_back_to_deny_cooldown_env(self) -> None:
-        module, _from_url, _lease_cls, _redis_client, _lease_manager = _fresh_import_proxy_api(
-            {
-                "JOBSEARCH_PROXY_REDIS_URL": "redis://unit-test:6379/0",
-                "JOBSEARCH_PROXY_LEASE_TTL_SECONDS": "11",
-                "JOBSEARCH_PROXY_LEASE_MAX_ATTEMPTS": "13",
-                "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS": "31",
-            }
-        )
-        self.assertEqual(module.blocked_cooldown_seconds, 31)
-
     def test_endpoint_functions(self) -> None:
         module, _from_url, _lease_cls, redis_client, lease_manager = _fresh_import_proxy_api(
             {
                 "JOBSEARCH_PROXY_REDIS_URL": "redis://unit-test:6379/0",
                 "JOBSEARCH_PROXY_LEASE_TTL_SECONDS": "10",
                 "JOBSEARCH_PROXY_LEASE_MAX_ATTEMPTS": "12",
-                "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS": "30",
+                "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS": "30",
             }
         )
         lease_manager.sizes.return_value = {"available": 1, "inuse": 2, "blocked": 3}

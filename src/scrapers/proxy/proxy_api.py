@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from redis import Redis
@@ -46,9 +44,6 @@ lease_ttl_seconds = require_env_int("JOBSEARCH_PROXY_LEASE_TTL_SECONDS", minimum
 lease_max_attempts = require_env_int("JOBSEARCH_PROXY_LEASE_MAX_ATTEMPTS", minimum=1)
 blocked_cooldown_seconds = require_env_int(
     "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS",
-    minimum=1,
-) if os.getenv("JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS") else require_env_int(
-    "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS",
     minimum=1,
 )
 

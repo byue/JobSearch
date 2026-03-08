@@ -28,7 +28,7 @@ graph TD
 1. `wait_for_proxy_capacity`
 - Polls proxy API `sizes(scope=...)` for all configured scopes.
 - Requires:
-  - total available >= `JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_TOTAL`
+  - available per selected scope >= `JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_PER_SCOPE`
   - each scope available >= `JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_PER_SCOPE`
 
 2. `create_publish_run`

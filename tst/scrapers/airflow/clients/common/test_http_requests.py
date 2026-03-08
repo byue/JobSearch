@@ -57,7 +57,7 @@ class HttpRequestsTest(unittest.TestCase):
         br.assert_called_once()
 
     def test_request_text_with_session_backoff_http_error_giveup(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1, retryable_status_codes=frozenset({429}))
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1)
         http_error = requests.exceptions.HTTPError("boom")
         response = requests.Response()
         response.status_code = 500
@@ -134,7 +134,7 @@ class HttpRequestsTest(unittest.TestCase):
         proxy_client.complete_requests_proxy.assert_called_with(
             resource="http://1.2.3.4:80",
             token="tok",
-            success=False,
+            success=True,
             scope="x",
         )
 
@@ -158,7 +158,14 @@ class HttpRequestsTest(unittest.TestCase):
                 proxy_management_client=proxy_client,
             )
             self.assertEqual(out, b"abc")
-            self.assertTrue(any("proxy_lease_complete_failed action=release" in call.args[0] for call in warn.call_args_list))
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "release" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
 
         proxy_client.reset_mock()
         proxy_client.complete_requests_proxy.return_value = False
@@ -176,10 +183,46 @@ class HttpRequestsTest(unittest.TestCase):
                     request_policy=policy,
                     proxy_management_client=proxy_client,
                 )
-            self.assertTrue(any("proxy_lease_complete_failed action=block" in call.args[0] for call in warn.call_args_list))
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "release" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
+
+        proxy_client.reset_mock()
+        proxy_client.complete_requests_proxy.return_value = False
+        http_403 = requests.exceptions.HTTPError("forbidden")
+        response = requests.Response()
+        response.status_code = 403
+        http_403.response = response
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch(
+            "scrapers.airflow.clients.common.http_requests.browser_request",
+            side_effect=http_403,
+        ), patch("scrapers.airflow.clients.common.http_requests.LOGGER.warning") as warn:
+            with self.assertRaises(requests.exceptions.HTTPError):
+                http.request_bytes_with_backoff(
+                    url="https://x",
+                    headers={"h": "v"},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "block" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
 
     def test_request_bytes_with_backoff_http_error_giveup(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1, retryable_status_codes=frozenset({429}))
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1)
         proxy_client = Mock()
         http_error = requests.exceptions.HTTPError("boom")
         response = requests.Response()
@@ -234,6 +277,263 @@ class HttpRequestsTest(unittest.TestCase):
                 ),
                 {"a": 1},
             )
+
+    def test_request_helpers_pass_tuple_timeout_when_connect_timeout_set(self) -> None:
+        policy = RequestPolicy(timeout_seconds=4.0, connect_timeout_seconds=1.0, max_retries=1)
+        response = Mock()
+        response.text = "ok"
+        with patch("scrapers.airflow.clients.common.http_requests.browser_request", return_value=response) as br:
+            _ = http.request_text_with_session_backoff(
+                method="GET",
+                url="https://x",
+                headers={},
+                request_policy=policy,
+            )
+        self.assertEqual(br.call_args.kwargs["timeout"], (1.0, 4.0))
+
+    def test_is_connection_error_patterns(self) -> None:
+        timed_out_error = requests.exceptions.RequestException("Connection timed out after 2000 milliseconds")
+        self.assertTrue(http._is_connection_error(timed_out_error))
+
+        failed_connect_error = requests.exceptions.RequestException("Failed to connect to target")
+        self.assertTrue(http._is_connection_error(failed_connect_error))
+
+        reset_by_peer_error = requests.exceptions.RequestException(
+            "Failed to perform, curl: (56) Recv failure: Connection reset by peer"
+        )
+        self.assertTrue(http._is_connection_error(reset_by_peer_error))
+
+        closed_abruptly_error = requests.exceptions.RequestException(
+            "Failed to perform, curl: (56) Connection closed abruptly"
+        )
+        self.assertTrue(http._is_connection_error(closed_abruptly_error))
+
+        tunnel_failed_error = requests.exceptions.RequestException(
+            "Failed to perform, curl: (56) CONNECT tunnel failed, response 502"
+        )
+        self.assertTrue(http._is_connection_error(tunnel_failed_error))
+
+        unrelated_error = requests.exceptions.RequestException("some other request failure")
+        self.assertFalse(http._is_connection_error(unrelated_error))
+
+    def test_should_block_proxy_patterns(self) -> None:
+        connect_error = requests.exceptions.RequestException("Failed to connect to target")
+        self.assertTrue(http._should_block_proxy(connect_error))
+
+        tunnel_error = requests.exceptions.RequestException("CONNECT tunnel failed, response 502")
+        self.assertTrue(http._should_block_proxy(tunnel_error))
+
+        curl56_error = requests.exceptions.RequestException("curl: (56) recv failure")
+        self.assertFalse(http._should_block_proxy(curl56_error))
+
+        http_403 = requests.exceptions.HTTPError("forbidden")
+        response = requests.Response()
+        response.status_code = 403
+        http_403.response = response
+        self.assertTrue(http._should_block_proxy(http_403))
+
+        other_error = requests.exceptions.RequestException("boom")
+        self.assertFalse(http._should_block_proxy(other_error))
+
+    def test_session_backoff_retries_on_connection_error(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        error = requests.exceptions.RequestException("Failed to connect to target")
+        with patch("scrapers.airflow.clients.common.http_requests.browser_request", side_effect=error) as br:
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_text_with_session_backoff(
+                    method="GET",
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                )
+        self.assertEqual(br.call_count, 5)
+
+    def test_bytes_backoff_retries_on_connection_error(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        proxy_client = Mock()
+        error = requests.exceptions.RequestException("Connection timed out after 2000 milliseconds")
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch("scrapers.airflow.clients.common.http_requests.browser_request", side_effect=error) as br:
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_bytes_with_backoff(
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+        self.assertEqual(br.call_count, 5)
+        proxy_client.complete_requests_proxy.assert_called_with(
+            resource="http://1.2.3.4:80",
+            token="tok",
+            success=False,
+            scope="x",
+        )
+
+    def test_request_text_with_managed_proxy_backoff_validation_and_success(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1)
+        proxy_client = Mock()
+        with self.assertRaises(ValueError):
+            http.request_text_with_managed_proxy_backoff(
+                method=" ",
+                url="https://x",
+                headers={},
+                request_policy=policy,
+                proxy_management_client=proxy_client,
+            )
+
+        response = Mock()
+        response.text = "ok"
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch("scrapers.airflow.clients.common.http_requests.browser_request", return_value=response) as br:
+            text = http.request_text_with_managed_proxy_backoff(
+                method="post",
+                url="https://x",
+                headers={"h": "v"},
+                request_policy=policy,
+                proxy_management_client=proxy_client,
+                data={"k": "v"},
+            )
+        self.assertEqual(text, "ok")
+        self.assertEqual(br.call_args.kwargs["method"], "POST")
+        proxy_client.complete_requests_proxy.assert_called_with(
+            resource="http://1.2.3.4:80",
+            token="tok",
+            success=True,
+            scope="x",
+        )
+
+    def test_request_text_with_managed_proxy_backoff_failure_paths(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1)
+        proxy_client = Mock()
+        proxy_client.complete_requests_proxy.return_value = False
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch(
+            "scrapers.airflow.clients.common.http_requests.browser_request",
+            side_effect=requests.exceptions.RequestException("boom"),
+        ), patch("scrapers.airflow.clients.common.http_requests.LOGGER.warning") as warn:
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_text_with_managed_proxy_backoff(
+                    method="GET",
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "release" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
+
+        proxy_client.reset_mock()
+        proxy_client.complete_requests_proxy.return_value = False
+        http_403 = requests.exceptions.HTTPError("forbidden")
+        response = requests.Response()
+        response.status_code = 403
+        http_403.response = response
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch(
+            "scrapers.airflow.clients.common.http_requests.browser_request",
+            side_effect=http_403,
+        ), patch("scrapers.airflow.clients.common.http_requests.LOGGER.warning") as warn:
+            with self.assertRaises(requests.exceptions.HTTPError):
+                http.request_text_with_managed_proxy_backoff(
+                    method="GET",
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "block" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
+
+        proxy_client.reset_mock()
+        proxy_client.complete_requests_proxy.return_value = False
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch(
+            "scrapers.airflow.clients.common.http_requests.browser_request",
+            side_effect=requests.exceptions.RequestException("Connection timed out after 2000 milliseconds"),
+        ), patch("scrapers.airflow.clients.common.http_requests.LOGGER.warning") as warn:
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_text_with_managed_proxy_backoff(
+                    method="GET",
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "block" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
+
+        proxy_client.reset_mock()
+        proxy_client.complete_requests_proxy.return_value = False
+        response = Mock()
+        response.text = "ok"
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch("scrapers.airflow.clients.common.http_requests.browser_request", return_value=response), patch(
+            "scrapers.airflow.clients.common.http_requests.LOGGER.warning"
+        ) as warn:
+            out = http.request_text_with_managed_proxy_backoff(
+                method="GET",
+                url="https://x",
+                headers={},
+                request_policy=policy,
+                proxy_management_client=proxy_client,
+            )
+            self.assertEqual(out, "ok")
+            self.assertTrue(
+                any(
+                    call.args
+                    and "proxy_lease_complete_failed" in " ".join(str(arg) for arg in call.args)
+                    and "release" in " ".join(str(arg) for arg in call.args)
+                    for call in warn.call_args_list
+                )
+            )
+
+    def test_request_text_with_managed_proxy_backoff_retries_on_connection_error(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        proxy_client = Mock()
+        error = requests.exceptions.RequestException("Failed to connect to target")
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch("scrapers.airflow.clients.common.http_requests.browser_request", side_effect=error) as br:
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_text_with_managed_proxy_backoff(
+                    method="GET",
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
+        self.assertEqual(br.call_count, 5)
 
 
 if __name__ == "__main__":
