@@ -19,7 +19,8 @@ from scrapers.airflow.clients.common.pay import extract_pay_details_from_descrip
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import (
     build_get_url,
-    request_text_with_session_backoff,
+    request_text_with_backoff,
+    request_text_with_managed_proxy_backoff,
 )
 from web.backend.schemas import (
     GetJobDetailsResponse,
@@ -81,7 +82,7 @@ class MetaJobsClient(JobsClient):
     SEARCH_PATH = "/jobsearch"
     JOBS_PATH = "/jobs"
     GRAPHQL_PATH = "/api/graphql/"
-    PAGE_SIZE = 25
+    PAGE_SIZE = 10
     ASBD_ID = "359341"
 
     SEARCH_POLICY_KEY = "search"
@@ -376,30 +377,23 @@ class MetaJobsClient(JobsClient):
 
 
     def _extract_posted_ts_from_job_page(self, *, details_url: str) -> int | None:
-        target_host = urllib.parse.urlparse(self.base_url).netloc or "unknown"
-        resolved_proxies, resource, token = self._acquire_proxies(scope=target_host)
         try:
-            html_payload = request_text_with_session_backoff(
-                method="GET",
+            html_payload = request_text_with_backoff(
                 url=details_url,
                 headers={"Accept": "text/html"},
                 request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
-                proxies=resolved_proxies,
+                proxy_management_client=self.proxy_management_client,
             )
-            self._complete_proxies(resource=resource, token=token, success=True, scope=target_host)
             return self._extract_posted_ts_from_html(html_payload)
         except Exception as exc:
             status_code = None
             if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
                 status_code = int(exc.response.status_code)
             LOGGER.warning(
-                "proxy_request_failed resource=%s host=%s operation=meta_job_page:date_posted error=%s status=%s",
-                resource,
-                target_host,
+                "meta_job_page_date_posted_fetch_failed error=%s status=%s",
                 type(exc).__name__,
                 status_code,
             )
-            self._complete_proxies(resource=resource, token=token, success=False, scope=target_host)
             return None
 
     @classmethod
@@ -450,12 +444,10 @@ class MetaJobsClient(JobsClient):
         referer_path: str,
         endpoint_policy_key: str,
     ) -> Mapping[str, Any]:
-        target_host = urllib.parse.urlparse(self.base_url).netloc or "unknown"
-        resolved_proxies, resource, token = self._acquire_proxies(scope=target_host)
         try:
-            lsd_token = self._bootstrap_lsd_token(proxies=resolved_proxies)
+            lsd_token = self._bootstrap_lsd_token()
 
-            response_text = request_text_with_session_backoff(
+            response_text = request_text_with_managed_proxy_backoff(
                 method="POST",
                 url=f"{self.base_url}{self.GRAPHQL_PATH}",
                 headers={
@@ -480,7 +472,7 @@ class MetaJobsClient(JobsClient):
                     "doc_id": doc_id,
                 },
                 request_policy=self.get_request_policy(endpoint_policy_key),
-                proxies=resolved_proxies,
+                proxy_management_client=self.proxy_management_client,
             )
             response_text = self._strip_for_loop_prefix(response_text)
 
@@ -496,41 +488,34 @@ class MetaJobsClient(JobsClient):
                         raise ValueError(f"Meta GraphQL error for {query_name}: {message}")
                 raise ValueError(f"Meta GraphQL error for {query_name}")
 
-            self._complete_proxies(resource=resource, token=token, success=True, scope=target_host)
             return parsed_mapping
         except Exception as exc:
             status_code = None
             if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
                 status_code = int(exc.response.status_code)
             LOGGER.warning(
-                "proxy_request_failed resource=%s host=%s operation=meta_graphql:%s error=%s status=%s",
-                resource,
-                target_host,
+                "meta_graphql_request_failed operation=%s error=%s status=%s",
                 query_name,
                 type(exc).__name__,
                 status_code,
             )
-            self._complete_proxies(resource=resource, token=token, success=False, scope=target_host)
             raise
 
     def _bootstrap_lsd_token(
         self,
-        *,
-        proxies: dict[str, str] | None,
     ) -> str:
         bootstrap_url = build_get_url(
             base_url=self.base_url,
             path=self.SEARCH_PATH,
             params=[],
         )
-        html_payload = request_text_with_session_backoff(
-            method="GET",
+        html_payload = request_text_with_backoff(
             url=bootstrap_url,
             headers={
                 "Accept": "text/html",
             },
             request_policy=self.get_request_policy(self.GRAPHQL_BOOTSTRAP_POLICY_KEY),
-            proxies=proxies,
+            proxy_management_client=self.proxy_management_client,
         )
         match = self._LSD_PATTERN.search(html_payload)
         if not match:
@@ -547,21 +532,6 @@ class MetaJobsClient(JobsClient):
         if normalized.startswith(cls._FOR_LOOP_PREFIX):
             return normalized[len(cls._FOR_LOOP_PREFIX) :]
         return normalized
-
-    def _acquire_proxies(self, *, scope: str | None = None) -> tuple[dict[str, str], str, str]:
-        if self.proxy_management_client is None:
-            raise requests.exceptions.ProxyError("Proxy management client is not configured")
-        return self.proxy_management_client.acquire_requests_proxy(scope=scope)
-
-    def _complete_proxies(self, *, resource: str, token: str, success: bool, scope: str | None = None) -> None:
-        if self.proxy_management_client is None:
-            return
-        self.proxy_management_client.complete_requests_proxy(
-            resource=resource,
-            token=token,
-            success=success,
-            scope=scope,
-        )
 
     @classmethod
     def _extract_html_fragment(cls, value: Any) -> str | None:

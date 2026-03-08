@@ -1,6 +1,6 @@
 import unittest
 
-from scrapers.airflow.clients.common.request_policy import DEFAULT_RETRYABLE_STATUS_CODES, RequestPolicy
+from scrapers.airflow.clients.common.request_policy import RequestPolicy
 
 
 class RequestPolicyTest(unittest.TestCase):
@@ -8,14 +8,15 @@ class RequestPolicyTest(unittest.TestCase):
         policy = RequestPolicy(timeout_seconds=3.0, max_retries=4)
         self.assertEqual(policy.timeout_seconds, 3.0)
         self.assertEqual(policy.max_retries, 4)
+        self.assertIsNone(policy.connect_timeout_seconds)
         self.assertEqual(policy.backoff_factor, 0.5)
         self.assertEqual(policy.max_backoff_seconds, 6.0)
         self.assertFalse(policy.jitter)
-        self.assertEqual(policy.retryable_status_codes, DEFAULT_RETRYABLE_STATUS_CODES)
+        self.assertEqual(policy.timeout_for_http(), 3.0)
 
-    def test_custom_retryable_status_codes(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1, retryable_status_codes=frozenset({418}))
-        self.assertEqual(policy.retryable_status_codes, frozenset({418}))
+    def test_connect_and_request_timeout_tuple(self) -> None:
+        policy = RequestPolicy(timeout_seconds=20.0, connect_timeout_seconds=5.0, max_retries=2)
+        self.assertEqual(policy.timeout_for_http(), (5.0, 20.0))
 
 
 if __name__ == "__main__":

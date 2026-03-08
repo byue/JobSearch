@@ -125,7 +125,7 @@ class ProxyProducerTest(unittest.TestCase):
             )
             mock_logger.info.assert_any_call("proxy producer exiting")
 
-    def test_main_logs_loop_error_and_uses_deny_cooldown_fallback(self) -> None:
+    def test_main_logs_loop_error_and_uses_blocked_cooldown(self) -> None:
         with patch("scrapers.proxy.proxy_producer.os.getenv") as mock_getenv, patch(
             "scrapers.proxy.proxy_producer.require_env"
         ) as mock_require_env, patch(
@@ -143,8 +143,7 @@ class ProxyProducerTest(unittest.TestCase):
             "scrapers.proxy.proxy_producer.LOGGER"
         ) as mock_logger:
             mock_getenv.side_effect = lambda key, default=None: {
-                "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS": None,
-                "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS": "99",
+                "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS": "99",
                 "JOBSEARCH_PROXY_SCOPES": "default",
             }.get(key, default)
             mock_require_env.side_effect = lambda key: {
@@ -182,7 +181,7 @@ class ProxyProducerTest(unittest.TestCase):
             "JOBSEARCH_AIRFLOW_COMPANIES": "amazon,apple,google,meta,microsoft,netflix",
             "JOBSEARCH_PROXY_LEASE_TTL_SECONDS": "10",
             "JOBSEARCH_PROXY_LEASE_MAX_ATTEMPTS": "10",
-            "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS": "10",
+            "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS": "10",
         }
         with patch.dict(os.environ, env, clear=False), patch("signal.signal"), patch("redis.Redis") as mock_redis_cls, patch(
             "scrapers.proxy.lease_manager.LeaseManager"

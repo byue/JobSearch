@@ -7,6 +7,7 @@ from scrapers.common.env import (
     env_float,
     env_int,
     require_env,
+    require_env_bool,
     require_env_float,
     require_env_int,
 )
@@ -44,6 +45,21 @@ class EnvUtilsTest(unittest.TestCase):
         with patch.dict(os.environ, {"X_FLOAT": "0.01"}, clear=True):
             with self.assertRaises(RuntimeError):
                 require_env_float("X_FLOAT", minimum=0.1)
+
+    def test_require_env_bool(self) -> None:
+        true_values = ["1", "true", "yes", "y", "on", "TrUe"]
+        for value in true_values:
+            with patch.dict(os.environ, {"X_BOOL_REQ": value}, clear=True):
+                self.assertTrue(require_env_bool("X_BOOL_REQ"))
+
+        false_values = ["0", "false", "no", "n", "off", "FaLsE"]
+        for value in false_values:
+            with patch.dict(os.environ, {"X_BOOL_REQ": value}, clear=True):
+                self.assertFalse(require_env_bool("X_BOOL_REQ"))
+
+        with patch.dict(os.environ, {"X_BOOL_REQ": "maybe"}, clear=True):
+            with self.assertRaises(RuntimeError):
+                require_env_bool("X_BOOL_REQ")
 
     def test_env_int(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

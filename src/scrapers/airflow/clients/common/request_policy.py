@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import FrozenSet
-
-DEFAULT_RETRYABLE_STATUS_CODES: FrozenSet[int] = frozenset({429, 500, 502, 503, 504})
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -14,8 +11,12 @@ class RequestPolicy:
 
     timeout_seconds: float
     max_retries: int
+    connect_timeout_seconds: float | None = None
     backoff_factor: float = 0.5
     max_backoff_seconds: float = 6.0
     jitter: bool = False
-    retryable_status_codes: FrozenSet[int] = field(default_factory=lambda: DEFAULT_RETRYABLE_STATUS_CODES)
 
+    def timeout_for_http(self) -> float | tuple[float, float]:
+        if self.connect_timeout_seconds is None:
+            return float(self.timeout_seconds)
+        return (float(self.connect_timeout_seconds), float(self.timeout_seconds))

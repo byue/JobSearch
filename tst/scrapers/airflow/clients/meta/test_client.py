@@ -127,12 +127,10 @@ class MetaClientTest(unittest.TestCase):
 
     def test_graphql_query_and_bootstrap(self) -> None:
         client = self._client()
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch.object(
-            client, "_bootstrap_lsd_token", return_value="abc"
-        ), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+        with patch.object(client, "_bootstrap_lsd_token", return_value="abc"), patch(
+            "scrapers.airflow.clients.meta.client.request_text_with_managed_proxy_backoff",
             return_value='for (;;);{"data":{"ok":1}}',
-        ), patch.object(client, "_complete_proxies") as complete:
+        ):
             out = client._run_graphql_query(
                 doc_id="1",
                 query_name="Q",
@@ -141,14 +139,11 @@ class MetaClientTest(unittest.TestCase):
                 endpoint_policy_key=client.SEARCH_POLICY_KEY,
             )
             self.assertEqual(out["data"]["ok"], 1)
-            complete.assert_called_with(resource="r", token="t", success=True, scope="www.metacareers.com")
 
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch.object(
-            client, "_bootstrap_lsd_token", return_value="abc"
-        ), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+        with patch.object(client, "_bootstrap_lsd_token", return_value="abc"), patch(
+            "scrapers.airflow.clients.meta.client.request_text_with_managed_proxy_backoff",
             return_value='{"errors":[{"message":"boom"}]}',
-        ), patch.object(client, "_complete_proxies") as complete:
+        ):
             with self.assertRaises(ValueError):
                 client._run_graphql_query(
                     doc_id="1",
@@ -157,16 +152,15 @@ class MetaClientTest(unittest.TestCase):
                     referer_path="/jobsearch",
                     endpoint_policy_key=client.SEARCH_POLICY_KEY,
                 )
-            complete.assert_called_with(resource="r", token="t", success=False, scope="www.metacareers.com")
 
         with patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+            "scrapers.airflow.clients.meta.client.request_text_with_backoff",
             return_value='..."LSD",[],{"token":"abc"}...',
         ):
-            self.assertEqual(client._bootstrap_lsd_token(proxies=None), "abc")
-        with patch("scrapers.airflow.clients.meta.client.request_text_with_session_backoff", return_value="no-token"):
+            self.assertEqual(client._bootstrap_lsd_token(), "abc")
+        with patch("scrapers.airflow.clients.meta.client.request_text_with_backoff", return_value="no-token"):
             with self.assertRaises(ValueError):
-                client._bootstrap_lsd_token(proxies=None)
+                client._bootstrap_lsd_token()
 
     def test_search_payload_helpers(self) -> None:
         client = self._client()
@@ -187,10 +181,6 @@ class MetaClientTest(unittest.TestCase):
         self.assertEqual(client._build_jazoest("ab"), f"2{ord('a') + ord('b')}")
         self.assertEqual(client._strip_for_loop_prefix("for (;;); { }"), " { }")
         self.assertEqual(client._strip_for_loop_prefix("x"), "x")
-        client.proxy_management_client = None
-        with self.assertRaises(requests.exceptions.ProxyError):
-            client._acquire_proxies()
-        client._complete_proxies(resource="r", token="t", success=True)
 
         self.assertEqual(client._extract_html_fragment('{"__html":"x"}'), "x")
         self.assertEqual(client._extract_html_fragment("plain"), "plain")
@@ -231,12 +221,6 @@ class MetaClientTest(unittest.TestCase):
 
     def test_additional_helper_branches(self) -> None:
         client = self._client()
-        with patch.object(client.proxy_management_client, "acquire_requests_proxy", return_value=({"http": "h"}, "r", "t")):
-            self.assertEqual(client._acquire_proxies()[1], "r")
-        client.proxy_management_client = Mock()
-        client._complete_proxies(resource="r", token="t", success=False)
-        client.proxy_management_client.complete_requests_proxy.assert_called_once()
-
         self.assertEqual(client._extract_html_fragment('{"__html":"x"}'), "x")
         self.assertEqual(client._extract_html_fragment('{"__html":1}'), '{"__html":1}')
         self.assertEqual(client._extract_html_fragment('{"__html":"x"'), '{"__html":"x"')
@@ -304,34 +288,27 @@ class MetaClientTest(unittest.TestCase):
     def test_extract_posted_ts_from_job_page_success_and_failure(self) -> None:
         client = self._client()
 
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+        with patch(
+            "scrapers.airflow.clients.meta.client.request_text_with_backoff",
             return_value='<script type="application/ld+json">{"datePosted":"2026-03-01T00:00:00Z"}</script>',
-        ), patch.object(client, "_complete_proxies") as complete:
+        ):
             posted_ts = client._extract_posted_ts_from_job_page(details_url="https://www.metacareers.com/jobs/1/")
             self.assertEqual(posted_ts, 1772323200)
-            complete.assert_called_with(resource="r", token="t", success=True, scope="www.metacareers.com")
 
         http_error = requests.exceptions.HTTPError("boom")
         response = requests.Response()
         response.status_code = 502
         http_error.response = response
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
-            side_effect=http_error,
-        ), patch.object(client, "_complete_proxies") as complete:
+        with patch("scrapers.airflow.clients.meta.client.request_text_with_backoff", side_effect=http_error):
             posted_ts = client._extract_posted_ts_from_job_page(details_url="https://www.metacareers.com/jobs/1/")
             self.assertIsNone(posted_ts)
-            complete.assert_called_with(resource="r", token="t", success=False, scope="www.metacareers.com")
 
     def test_run_graphql_query_error_without_message(self) -> None:
         client = self._client()
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch.object(
-            client, "_bootstrap_lsd_token", return_value="abc"
-        ), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+        with patch.object(client, "_bootstrap_lsd_token", return_value="abc"), patch(
+            "scrapers.airflow.clients.meta.client.request_text_with_managed_proxy_backoff",
             return_value='{"errors":["boom"]}',
-        ), patch.object(client, "_complete_proxies"):
+        ):
             with self.assertRaises(ValueError):
                 client._run_graphql_query(
                     doc_id="1",
@@ -347,12 +324,10 @@ class MetaClientTest(unittest.TestCase):
         response = requests.Response()
         response.status_code = 502
         http_error.response = response
-        with patch.object(client, "_acquire_proxies", return_value=({"http": "h"}, "r", "t")), patch.object(
-            client, "_bootstrap_lsd_token", return_value="abc"
-        ), patch(
-            "scrapers.airflow.clients.meta.client.request_text_with_session_backoff",
+        with patch.object(client, "_bootstrap_lsd_token", return_value="abc"), patch(
+            "scrapers.airflow.clients.meta.client.request_text_with_managed_proxy_backoff",
             side_effect=http_error,
-        ), patch.object(client, "_complete_proxies") as complete:
+        ):
             with self.assertRaises(requests.exceptions.HTTPError):
                 client._run_graphql_query(
                     doc_id="1",
@@ -361,7 +336,6 @@ class MetaClientTest(unittest.TestCase):
                     referer_path="/jobsearch",
                     endpoint_policy_key=client.SEARCH_POLICY_KEY,
                 )
-            complete.assert_called_with(resource="r", token="t", success=False, scope="www.metacareers.com")
 
 
 if __name__ == "__main__":

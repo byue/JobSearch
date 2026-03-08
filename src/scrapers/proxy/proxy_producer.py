@@ -76,13 +76,7 @@ def main() -> int:
     heartbeat_interval_seconds = env_float("JOBSEARCH_PROXY_PRODUCER_HEARTBEAT_SECONDS", default=15.0, minimum=1.0)
     lease_ttl_seconds = require_env_int("JOBSEARCH_PROXY_LEASE_TTL_SECONDS", minimum=1)
     lease_max_attempts = require_env_int("JOBSEARCH_PROXY_LEASE_MAX_ATTEMPTS", minimum=1)
-    blocked_cooldown_seconds = require_env_int(
-        "JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS",
-        minimum=1,
-    ) if os.getenv("JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS") else require_env_int(
-        "JOBSEARCH_PROXY_DENY_COOLDOWN_SECONDS",
-        minimum=1,
-    )
+    blocked_cooldown_seconds = require_env_int("JOBSEARCH_PROXY_BLOCKED_COOLDOWN_SECONDS", minimum=1)
     raw_scope_override = os.getenv("JOBSEARCH_PROXY_SCOPES")
     if raw_scope_override:
         scopes = [LeaseManager.normalize_scope(item) for item in raw_scope_override.split(",") if item.strip()]
