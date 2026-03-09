@@ -90,9 +90,14 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         cls._module_names = [
             "airflow",
             "airflow.decorators",
+            "airflow.sdk",
             "airflow.exceptions",
             "airflow.operators.python",
             "airflow.sensors.python",
+            "airflow.providers",
+            "airflow.providers.standard",
+            "airflow.providers.standard.sensors",
+            "airflow.providers.standard.sensors.python",
             "sqlalchemy",
             "sqlalchemy.engine",
             "sqlalchemy.pool",
@@ -108,9 +113,14 @@ class JobScrapersLocalDagTest(unittest.TestCase):
 
         airflow_mod = types.ModuleType("airflow")
         airflow_decorators_mod = types.ModuleType("airflow.decorators")
+        airflow_sdk_mod = types.ModuleType("airflow.sdk")
         airflow_exceptions_mod = types.ModuleType("airflow.exceptions")
         airflow_operators_python_mod = types.ModuleType("airflow.operators.python")
         airflow_sensors_python_mod = types.ModuleType("airflow.sensors.python")
+        airflow_providers_mod = types.ModuleType("airflow.providers")
+        airflow_providers_standard_mod = types.ModuleType("airflow.providers.standard")
+        airflow_providers_standard_sensors_mod = types.ModuleType("airflow.providers.standard.sensors")
+        airflow_providers_standard_sensors_python_mod = types.ModuleType("airflow.providers.standard.sensors.python")
         sqlalchemy_mod = types.ModuleType("sqlalchemy")
         sqlalchemy_engine_mod = types.ModuleType("sqlalchemy.engine")
         sqlalchemy_pool_mod = types.ModuleType("sqlalchemy.pool")
@@ -126,9 +136,13 @@ class JobScrapersLocalDagTest(unittest.TestCase):
 
         airflow_decorators_mod.dag = _fake_dag_decorator
         airflow_decorators_mod.task = _fake_task_decorator
+        airflow_sdk_mod.dag = _fake_dag_decorator
+        airflow_sdk_mod.task = _fake_task_decorator
+        airflow_sdk_mod.get_current_context = _fake_get_current_context
         airflow_exceptions_mod.AirflowFailException = _FakeAirflowFailException
         airflow_operators_python_mod.get_current_context = _fake_get_current_context
         airflow_sensors_python_mod.PythonSensor = _FakePythonSensor
+        airflow_providers_standard_sensors_python_mod.PythonSensor = _FakePythonSensor
         sqlalchemy_mod.text = lambda query: query
         sqlalchemy_mod.create_engine = lambda *args, **kwargs: object()
         sqlalchemy_engine_mod.Engine = object
@@ -165,9 +179,14 @@ class JobScrapersLocalDagTest(unittest.TestCase):
 
         sys.modules["airflow"] = airflow_mod
         sys.modules["airflow.decorators"] = airflow_decorators_mod
+        sys.modules["airflow.sdk"] = airflow_sdk_mod
         sys.modules["airflow.exceptions"] = airflow_exceptions_mod
         sys.modules["airflow.operators.python"] = airflow_operators_python_mod
         sys.modules["airflow.sensors.python"] = airflow_sensors_python_mod
+        sys.modules["airflow.providers"] = airflow_providers_mod
+        sys.modules["airflow.providers.standard"] = airflow_providers_standard_mod
+        sys.modules["airflow.providers.standard.sensors"] = airflow_providers_standard_sensors_mod
+        sys.modules["airflow.providers.standard.sensors.python"] = airflow_providers_standard_sensors_python_mod
         sys.modules["sqlalchemy"] = sqlalchemy_mod
         sys.modules["sqlalchemy.engine"] = sqlalchemy_engine_mod
         sys.modules["sqlalchemy.pool"] = sqlalchemy_pool_mod

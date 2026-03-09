@@ -16,6 +16,11 @@ LIMIT ?= 2
 TRUNCATE_CHARS ?= 10
 RUN_ID ?=
 ARGS ?=
+PROXY_API_URL ?= http://localhost:8090
+PROXY_SCOPE ?=
+PROXY_SCOPES ?=
+RESOURCE ?=
+PROXY_ENV_FILE ?= src/scrapers/airflow/docker.env
 UNIT_TEST_START_DIR ?= tst
 UNIT_TEST_PATTERN ?= test_*.py
 PYTHON_VERSION ?= 3.14.0
@@ -25,7 +30,7 @@ PYENV_BIN ?= $(PYENV_ROOT)/bin/pyenv
 PYENV_INSTALL_FLAGS ?= -v -s
 PYENV_MAKE_JOBS ?= $(shell nproc)
 
-.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures airflow-open web-open airflow-runs airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
+.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open airflow-runs airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
 
 help:
 	@echo "Targets:"
@@ -57,6 +62,7 @@ help:
 	@echo "  make db-peek            - Print latest rows (TABLE=<name[,name]> LIMIT=<n> TRUNCATE_CHARS=<n>)"
 	@echo "  make db-count-jobs      - Count jobs and job_details (optional RUN_ID=<id>)"
 	@echo "  make db-failures        - Show failed publish_runs (optional RUN_ID=<id>, LIMIT=<n>)"
+	@echo "  make proxy-state        - Show proxy sizes by scope (or state with RESOURCE + PROXY_SCOPE)"
 	@echo "  make airflow-open       - Open Airflow UI in browser (http://localhost:8080)"
 	@echo "  make airflow-runs       - List recent DAG runs (use DAG_ID=<id>)"
 	@echo "  make airflow-run-stop   - Stop DAG run by marking it failed (RUN_ID=<run_id>)"
@@ -266,9 +272,42 @@ db-failures:
 		 LIMIT $(LIMIT);"; \
 	fi
 
+proxy-state:
+	@set -e; \
+	pretty_print() { \
+		if command -v jq >/dev/null 2>&1; then jq .; else cat; fi; \
+	}; \
+	if [ -n "$(RESOURCE)" ]; then \
+		if [ -z "$(PROXY_SCOPE)" ]; then \
+			echo "PROXY_SCOPE is required when RESOURCE is set."; \
+			echo "Example: make proxy-state RESOURCE='http://10.0.0.1:8080' PROXY_SCOPE='www.amazon.jobs'"; \
+			exit 2; \
+		fi; \
+		curl -fsS --get "$(PROXY_API_URL)/state" \
+			--data-urlencode "resource=$(RESOURCE)" \
+			--data-urlencode "scope=$(PROXY_SCOPE)" | pretty_print; \
+		exit 0; \
+	fi; \
+	scopes="$(PROXY_SCOPES)"; \
+	if [ -z "$$scopes" ] && [ -n "$(PROXY_SCOPE)" ]; then \
+		scopes="$(PROXY_SCOPE)"; \
+	fi; \
+	if [ -z "$$scopes" ] && [ -f "$(PROXY_ENV_FILE)" ]; then \
+		scopes="$$(sed -n 's/^JOBSEARCH_PROXY_SCOPES=//p' "$(PROXY_ENV_FILE)" | tail -n 1)"; \
+	fi; \
+	if [ -z "$$scopes" ]; then \
+		echo "No scopes found. Set PROXY_SCOPE or PROXY_SCOPES, or ensure $(PROXY_ENV_FILE) contains JOBSEARCH_PROXY_SCOPES."; \
+		exit 2; \
+	fi; \
+	IFS=','; \
+	for scope in $$scopes; do \
+		echo "=== $$scope ==="; \
+		curl -fsS --get "$(PROXY_API_URL)/sizes" --data-urlencode "scope=$$scope" | pretty_print; \
+	done
+
 airflow-open:
 	@URL="http://localhost:8080"; \
-	HEALTH_URL="$$URL/health"; \
+	HEALTH_URL="$$URL/api/v2/monitor/health"; \
 	ready=0; \
 	echo "Waiting for Airflow UI to become ready..."; \
 	for i in $$(seq 1 30); do \
@@ -302,7 +341,7 @@ airflow-open:
 	fi
 
 airflow-runs:
-	$(DOCKER_COMPOSE) exec airflow-webserver airflow dags list-runs -d $(DAG_ID) --no-backfill
+	$(DOCKER_COMPOSE) exec airflow-webserver airflow dags list-runs $(DAG_ID) --no-backfill
 
 airflow-run-stop:
 	@if [ -z "$(RUN_ID)" ]; then \

@@ -103,15 +103,7 @@ services:
     user: "${AIRFLOW_UID:-50000}:0"
     command: >
       bash -c "
-      airflow db migrate &&
-      airflow users create
-      --username $${AIRFLOW_ADMIN_USERNAME}
-      --password $${AIRFLOW_ADMIN_PASSWORD}
-      --firstname $${AIRFLOW_ADMIN_FIRSTNAME}
-      --lastname $${AIRFLOW_ADMIN_LASTNAME}
-      --role Admin
-      --email $${AIRFLOW_ADMIN_EMAIL}
-      || true
+      airflow db migrate
       "
 
   airflow-webserver:
@@ -145,7 +137,7 @@ services:
       - airflow_logs:/opt/airflow/logs
       - airflow_plugins:/opt/airflow/plugins
     user: "${AIRFLOW_UID:-50000}:0"
-    command: webserver
+    command: api-server
     ports:
       - "8080:8080"
 
@@ -181,6 +173,39 @@ services:
       - airflow_plugins:/opt/airflow/plugins
     user: "${AIRFLOW_UID:-50000}:0"
     command: scheduler
+
+  airflow-dag-processor:
+    build:
+      context: ..
+      dockerfile: src/scrapers/airflow/Dockerfile
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-create-bucket:
+        condition: service_completed_successfully
+      airflow-init:
+        condition: service_completed_successfully
+      scraper-db-init:
+        condition: service_completed_successfully
+    env_file:
+      - ./scrapers/airflow/docker.env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/jobsearch/src/scrapers/airflow/dags
+      PYTHONPATH: /opt/jobsearch/src
+    volumes:
+      - ..:/opt/jobsearch
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    user: "${AIRFLOW_UID:-50000}:0"
+    command: dag-processor
 
   proxy-producer:
     build:

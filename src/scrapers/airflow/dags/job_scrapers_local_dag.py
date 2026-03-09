@@ -8,10 +8,9 @@ import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from airflow.decorators import dag, task
 from airflow.exceptions import AirflowFailException
-from airflow.operators.python import get_current_context
-from airflow.sensors.python import PythonSensor
+from airflow.providers.standard.sensors.python import PythonSensor
+from airflow.sdk import dag, get_current_context, task
 
 from scrapers.airflow.dags.job_scrapers_db import (
     fetch_consistency_counts,
