@@ -519,7 +519,7 @@ class MetaJobsClient(JobsClient):
         )
         match = self._LSD_PATTERN.search(html_payload)
         if not match:
-            raise ValueError("Unable to extract Meta request token from careers page")
+            raise RetryableUpstreamError("Unable to extract Meta request token from careers page")
         return match.group(1)
 
     @staticmethod
