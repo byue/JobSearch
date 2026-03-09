@@ -7,7 +7,9 @@ import App, {
   formatPosted,
   getJson,
   normalizeDescription,
+  normalizeCompany,
   postJson,
+  chooseSelectedCompany,
   toCompanyOption,
   toTitleCase
 } from "./App";
@@ -41,6 +43,17 @@ describe("App helpers", () => {
     expect(toCompanyOption(" Amazon ")).toEqual({ value: "amazon", label: "Amazon" });
   });
 
+  it("chooseSelectedCompany keeps existing selection when possible", () => {
+    const options = [
+      { value: "amazon", label: "Amazon" },
+      { value: "google", label: "Google" }
+    ];
+    expect(chooseSelectedCompany("google", options)).toBe("google");
+    expect(chooseSelectedCompany("meta", options)).toBe("amazon");
+    expect(chooseSelectedCompany("", options)).toBe("amazon");
+    expect(chooseSelectedCompany("google", [])).toBe("");
+  });
+
   it("formatPosted handles missing and unix timestamp", () => {
     expect(formatPosted(null)).toBe("—");
     expect(formatPosted(1700000000)).toMatch(/\w{3}/);
@@ -50,6 +63,8 @@ describe("App helpers", () => {
     expect(formatLocations(null)).toBe("—");
     expect(formatLocations([])).toBe("—");
     expect(formatLocations(["  "])).toBe("—");
+    expect(formatLocations([123])).toBe("—");
+    expect(formatLocations([{ city: 7, state: "WA", country: null }])).toBe("WA");
     expect(formatLocations(["Seattle"])).toBe("Seattle");
     expect(formatLocations([{ city: "Seattle", state: "WA", country: "US" }])).toBe("Seattle, WA, US");
     expect(
@@ -68,6 +83,12 @@ describe("App helpers", () => {
     expect(output).toContain("• One");
     expect(output).toContain("&");
     expect(normalizeDescription("")).toBe("");
+  });
+
+  it("normalizeCompany handles nullish and trimming", () => {
+    expect(normalizeCompany(undefined)).toBe("");
+    expect(normalizeCompany(null)).toBe("");
+    expect(normalizeCompany(" amazon ")).toBe("amazon");
   });
 
   it("extractError handles detail string/object/fallback", async () => {
@@ -215,13 +236,19 @@ describe("App component", () => {
   });
 
   it("shows company-load fallback errors and empty companies state", async () => {
-    fetch.mockImplementationOnce(() => makeResponse({ payload: { companies: [] } }));
+    fetch.mockImplementationOnce(() => makeResponse({ payload: {} }));
 
     render(<App />);
 
     expect(await screen.findByText("No companies returned by API.")).toBeInTheDocument();
     expect(screen.getByText("No jobs found on this page.")).toBeInTheDocument();
     expect(screen.getByText("No companies")).toBeInTheDocument();
+  });
+
+  it("shows default company-load error message for non-Error failures", async () => {
+    fetch.mockImplementationOnce(() => Promise.reject("network-down"));
+    render(<App />);
+    expect(await screen.findByText("Failed to load companies.")).toBeInTheDocument();
   });
 
   it("handles details error response and payload-without-job", async () => {
@@ -253,6 +280,27 @@ describe("App component", () => {
 
     fireEvent.click(screen.getByText("Role One"));
     expect(await screen.findByText("missing job")).toBeInTheDocument();
+  });
+
+  it("handles details payload-without-job and non-string error fallback", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            jobs: [{ id: "role-x", name: "Role X", company: "amazon", locations: [] }],
+            total_results: 1,
+            pagination_index: 1,
+            has_next_page: false
+          }
+        })
+      )
+      .mockImplementationOnce(() => makeResponse({ payload: { error: { code: "MISSING" } } }));
+
+    render(<App />);
+    expect(await screen.findByText("Role X")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Role X"));
+    expect(await screen.findByText("Failed to load details.")).toBeInTheDocument();
   });
 
   it("shows open-posting fallback action when apply link is missing", async () => {
@@ -325,6 +373,32 @@ describe("App component", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument());
   });
 
+  it("keeps modal open on non-escape keydown and handles non-Error details failure", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            jobs: [{ id: "role-y", company: "amazon", locations: [] }],
+            total_results: 1,
+            pagination_index: 1,
+            has_next_page: false
+          }
+        })
+      )
+      .mockImplementationOnce(() => Promise.reject("details-down"));
+
+    render(<App />);
+    expect(await screen.findByText("Positions")).toBeInTheDocument();
+    await waitFor(() => expect(document.querySelector("tr.row-clickable")).not.toBeNull());
+    const row = document.querySelector("tr.row-clickable");
+    fireEvent.click(row);
+    expect(await screen.findByText("Failed to load details.")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+  });
+
   it("supports next and previous pagination and company switching", async () => {
     fetch
       .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon", "google"] } }))
@@ -385,5 +459,114 @@ describe("App component", () => {
 
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "google" } });
     expect(await screen.findByText("G1")).toBeInTheDocument();
+  });
+
+  it("handles pagination-index fallback and search error reset", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            jobs: [{ id: "role-1", name: "Role One", company: "amazon", locations: [] }],
+            total_results: 1,
+            page_size: 1,
+            total_pages: 9,
+            has_next_page: true,
+            pagination_index: "not-a-number"
+          }
+        })
+      )
+      .mockImplementationOnce(() =>
+        makeResponse({ ok: false, status: 500, statusText: "ERR", payload: { detail: "boom" } })
+      );
+
+    render(<App />);
+
+    expect(await screen.findByText("Role One")).toBeInTheDocument();
+    expect(screen.getByText("Page 1 of 9")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() => expect(screen.getByText("No jobs found on this page.")).toBeInTheDocument());
+    expect(screen.getByText("boom")).toBeInTheDocument();
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+  });
+
+  it("handles missing jobs payload fallback values", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            total_results: "unknown",
+            page_size: 0,
+            has_next_page: false,
+            pagination_index: 1
+          }
+        })
+      );
+
+    render(<App />);
+    expect(await screen.findByText("No jobs found on this page.")).toBeInTheDocument();
+    expect(screen.getByText("Page 1")).toBeInTheDocument();
+  });
+
+  it("handles non-Error search failure with default message", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() => Promise.reject("jobs-down"));
+
+    render(<App />);
+    expect(await screen.findByText("Search request failed.")).toBeInTheDocument();
+  });
+
+  it("aborts previous details request when opening another row and falls back to Company label", async () => {
+    let firstDetailsSignal;
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            jobs: [
+              { id: "role-1", name: "Role One", company: "amazon", locations: [] },
+              { id: "role-2", name: "Role Two", locations: [] }
+            ],
+            total_results: 2,
+            page_size: 2,
+            pagination_index: 1,
+            has_next_page: false
+          }
+        })
+      )
+      .mockImplementationOnce((_url, options) => {
+        firstDetailsSignal = options.signal;
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => {
+            const aborted = new Error("aborted");
+            aborted.name = "AbortError";
+            reject(aborted);
+          });
+        });
+      })
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: {
+            job: {
+              name: "Role Two",
+              locations: []
+            }
+          }
+        })
+      );
+
+    render(<App />);
+
+    expect(await screen.findByText("Role One")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Role One"));
+    await screen.findByText("Loading details...");
+    fireEvent.click(screen.getByText("Role Two"));
+    await waitFor(() => expect(firstDetailsSignal.aborted).toBe(true));
+    await screen.findByRole("button", { name: "Close" });
+    const detailsCompanyLabel = document.querySelector(".details-meta span");
+    expect(detailsCompanyLabel?.textContent).toBe("Company");
   });
 });

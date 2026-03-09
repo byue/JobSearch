@@ -393,47 +393,51 @@ def job_scrapers_local_dag() -> None:
                 "error": response.error,
                 "job_detail_written": False,
             }
-        success = 200 <= status < 300 and response.job is not None
-        job_payload: dict[str, Any] | None = None
-        if success and response.job is not None:
-            pay_details = response.job.payDetails.model_dump(mode="json") if response.job.payDetails else None
-            posted_ts = getattr(response.job, "postedTs", None)
-            job_payload = {
-                "job_description": response.job.jobDescription,
-                "minimum_qualifications": list(response.job.minimumQualifications or []),
-                "preferred_qualifications": list(response.job.preferredQualifications or []),
-                "responsibilities": list(response.job.responsibilities or []),
-                "pay_details": pay_details,
-                "posted_ts_from_details": int(posted_ts) if isinstance(posted_ts, int) else None,
-            }
-
-            detail_row = {
-                "run_id": run_id,
-                "version_ts": version_ts,
-                "company": company,
-                "external_job_id": job_id,
-                "job_description": job_payload.get("job_description"),
-                "minimum_qualifications": _to_json(job_payload.get("minimum_qualifications")),
-                "preferred_qualifications": _to_json(job_payload.get("preferred_qualifications")),
-                "responsibilities": _to_json(job_payload.get("responsibilities")),
-                "pay_details": _to_json(job_payload.get("pay_details")),
-            }
-            posted_ts_raw = job_payload.get("posted_ts_from_details")
-            upsert_job_details(
-                db_url,
-                detail_row=detail_row,
-                posted_ts=(
-                    datetime.fromtimestamp(posted_ts_raw, tz=timezone.utc)
-                    if isinstance(posted_ts_raw, int)
-                    else None
-                ),
+        if not (200 <= status < 400) or response.job is None or response.job.payDetails is None:
+            raise ValueError(
+                "Detail fetch did not meet success criteria: "
+                f"company={company} job_id={job_id} status={status} "
+                f"has_job={response.job is not None} "
+                f"has_pay_details={response.job is not None and response.job.payDetails is not None}"
             )
+        pay_details = response.job.payDetails.model_dump(mode="json")
+        posted_ts = getattr(response.job, "postedTs", None)
+        job_payload: dict[str, Any] = {
+            "job_description": response.job.jobDescription,
+            "minimum_qualifications": list(response.job.minimumQualifications or []),
+            "preferred_qualifications": list(response.job.preferredQualifications or []),
+            "responsibilities": list(response.job.responsibilities or []),
+            "pay_details": pay_details,
+            "posted_ts_from_details": int(posted_ts) if isinstance(posted_ts, int) else None,
+        }
+
+        detail_row = {
+            "run_id": run_id,
+            "version_ts": version_ts,
+            "company": company,
+            "external_job_id": job_id,
+            "job_description": job_payload.get("job_description"),
+            "minimum_qualifications": _to_json(job_payload.get("minimum_qualifications")),
+            "preferred_qualifications": _to_json(job_payload.get("preferred_qualifications")),
+            "responsibilities": _to_json(job_payload.get("responsibilities")),
+            "pay_details": _to_json(job_payload.get("pay_details")),
+        }
+        posted_ts_raw = job_payload.get("posted_ts_from_details")
+        upsert_job_details(
+            db_url,
+            detail_row=detail_row,
+            posted_ts=(
+                datetime.fromtimestamp(posted_ts_raw, tz=timezone.utc)
+                if isinstance(posted_ts_raw, int)
+                else None
+            ),
+        )
         return {
             "company": company,
             "job_id": job_id,
-            "success": success,
+            "success": True,
             "error": response.error,
-            "job_detail_written": bool(success and job_payload is not None),
+            "job_detail_written": True,
         }
 
     @task(task_id="verify_db_consistency")

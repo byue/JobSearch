@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from redis import Redis
-from testcontainers.redis import RedisContainer
 
 from scrapers.proxy import proxy_producer
+from integration.scrapers.proxy.shared_redis_container import get_shared_redis_url
 
 
 class _FakeProxyGeneratorClient:
@@ -44,14 +44,10 @@ class ProxyEndToEndIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         try:
-            cls._redis_container = RedisContainer("redis:7.2-alpine")
-            cls._redis_container.start()
+            cls.redis_url = get_shared_redis_url()
         except Exception as exc:  # pragma: no cover - exercised only when Docker is unavailable
             raise unittest.SkipTest(f"Docker/Redis container unavailable: {exc}") from exc
 
-        host = cls._redis_container.get_container_host_ip()
-        port = cls._redis_container.get_exposed_port(6379)
-        cls.redis_url = f"redis://{host}:{port}/0"
         cls.redis = Redis.from_url(cls.redis_url, decode_responses=False)
         cls.api = _fresh_import_proxy_api(cls.redis_url)
         cls.client = TestClient(cls.api.app)
@@ -61,7 +57,6 @@ class ProxyEndToEndIntegrationTest(unittest.TestCase):
         cls.client.close()
         cls.redis.close()
         cls.api.redis_client.close()
-        cls._redis_container.stop()
 
     def setUp(self) -> None:
         self.redis.flushdb()

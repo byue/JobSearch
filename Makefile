@@ -5,19 +5,27 @@ VENV_PYTHON ?= $(VENV_DIR)/bin/python
 DEPS_STAMP ?= $(VENV_DIR)/.deps-installed
 COMPOSE_FILE ?= src/docker-compose.yml
 DOCKER_COMPOSE ?= docker compose -f $(COMPOSE_FILE)
-COVERAGE_RUN_ARGS ?= --source=src --omit='tst/*,src/scrapers/airflow/dags/*'
+COVERAGE_OMIT ?= tst/*
+COVERAGE_RCFILE ?= .coveragerc.test
 COVERAGE_FAIL_UNDER ?= 100
 SERVICE ?=
 DB_PEEK_SCRIPT ?= src/sql/peek_db.sh
 DAG_ID ?= job_scrapers_local
-PROXY_SCOPES ?= www.amazon.jobs jobs.apple.com www.google.com www.metacareers.com apply.careers.microsoft.com explore.jobs.netflix.net
 TABLE ?=
 LIMIT ?= 2
 TRUNCATE_CHARS ?= 10
 RUN_ID ?=
 ARGS ?=
+UNIT_TEST_START_DIR ?= tst
+UNIT_TEST_PATTERN ?= test_*.py
+PYTHON_VERSION ?= 3.14.0
+PYTHON_MAJOR_MINOR ?= $(word 1,$(subst ., ,$(PYTHON_VERSION))).$(word 2,$(subst ., ,$(PYTHON_VERSION)))
+PYENV_ROOT ?= $(HOME)/.pyenv
+PYENV_BIN ?= $(PYENV_ROOT)/bin/pyenv
+PYENV_INSTALL_FLAGS ?= -v -s
+PYENV_MAKE_JOBS ?= $(shell nproc)
 
-.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all test-proxy test-proxy-verbose coverage coverage-html compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open airflow-runs airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status
+.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures airflow-open web-open airflow-runs airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
 
 help:
 	@echo "Targets:"
@@ -26,15 +34,15 @@ help:
 	@echo "  make lint               - Run static lint checks"
 	@echo "  make build              - Run lint + compile + unit + integration tests"
 	@echo "  make test-unit          - Run all unit tests with coverage report + HTML (fails if coverage < $(COVERAGE_FAIL_UNDER)%)"
+	@echo "                           coverage opt out: COVERAGE_OMIT='tst/*,src/web/*'"
 	@echo "  make test-frontend      - Run frontend unit tests (Vitest)"
 	@echo "  make test-integration   - Run integration tests (requires Docker)"
 	@echo "  make test               - Run unit tests and integration tests"
 	@echo "  make test-all           - Alias for make test"
-	@echo "  make test-proxy         - Run proxy unit tests"
-	@echo "  make test-proxy-verbose - Run proxy unit tests (verbose)"
 	@echo "  make coverage           - Run all unit tests with coverage report (fails if coverage < $(COVERAGE_FAIL_UNDER)%)"
 	@echo "  make coverage-html      - Generate HTML coverage report (runs tests if needed)"
 	@echo "  make compile            - Compile-check src packages"
+	@echo "  make pyenv-setup-python - Run pyenv check + install Python + recreate .venv"
 	@echo "  make clean              - Remove Python/test artifacts"
 	@echo "  make up                 - Start local docker services"
 	@echo "  make down               - Stop local docker services"
@@ -49,7 +57,6 @@ help:
 	@echo "  make db-peek            - Print latest rows (TABLE=<name[,name]> LIMIT=<n> TRUNCATE_CHARS=<n>)"
 	@echo "  make db-count-jobs      - Count jobs and job_details (optional RUN_ID=<id>)"
 	@echo "  make db-failures        - Show failed publish_runs (optional RUN_ID=<id>, LIMIT=<n>)"
-	@echo "  make proxy-state        - Show proxy sizes (use SCOPE=<domain> for one scope)"
 	@echo "  make airflow-open       - Open Airflow UI in browser (http://localhost:8080)"
 	@echo "  make airflow-runs       - List recent DAG runs (use DAG_ID=<id>)"
 	@echo "  make airflow-run-stop   - Stop DAG run by marking it failed (RUN_ID=<run_id>)"
@@ -61,25 +68,94 @@ help:
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
 
-$(DEPS_STAMP): requirements-dev.txt requirements.txt src/web/backend/requirements.txt src/scrapers/proxy/requirements.txt src/scrapers/airflow/requirements.txt | venv
+_pyenv-check:
+	@if [ -x "$(PYENV_BIN)" ]; then \
+		echo "pyenv found: $$($(PYENV_BIN) --version)"; \
+	else \
+		echo "pyenv not found on PATH."; \
+		echo "Install with: make pyenv-setup-python"; \
+		exit 1; \
+	fi
+
+_pyenv-bootstrap:
+	@if [ ! -x "$(PYENV_BIN)" ]; then \
+		echo "Installing pyenv..."; \
+		curl https://pyenv.run | bash; \
+	else \
+		echo "pyenv already installed at $(PYENV_BIN)"; \
+	fi
+	@grep -q 'export PYENV_ROOT="$$HOME/.pyenv"' ~/.bashrc || echo 'export PYENV_ROOT="$$HOME/.pyenv"' >> ~/.bashrc
+	@grep -q 'export PATH="$$PYENV_ROOT/bin:$$PATH"' ~/.bashrc || echo 'export PATH="$$PYENV_ROOT/bin:$$PATH"' >> ~/.bashrc
+	@grep -q 'eval "$$(pyenv init -)"' ~/.bashrc || echo 'eval "$$(pyenv init -)"' >> ~/.bashrc
+	@echo "pyenv shell init lines ensured in ~/.bashrc"
+
+_pyenv-install-python: _pyenv-bootstrap _pyenv-check
+	@echo "Installing Python $(PYTHON_VERSION) with pyenv (this can take several minutes)..."
+	@echo "Tip: pyenv build logs are under /tmp/python-build.*"
+	MAKE_OPTS=-j$(PYENV_MAKE_JOBS) $(PYENV_BIN) install $(PYENV_INSTALL_FLAGS) $(PYTHON_VERSION)
+	$(PYENV_BIN) local $(PYTHON_VERSION)
+	PYENV_VERSION=$(PYTHON_VERSION) $(PYENV_BIN) exec python --version
+
+_pyenv-recreate-venv: _pyenv-check
+	rm -rf $(VENV_DIR)
+	PYENV_VERSION=$(PYTHON_VERSION) $(PYENV_BIN) exec python -m venv $(VENV_DIR)
+	. $(VENV_DIR)/bin/activate && pip install -U pip && pip install -r requirements-dev.txt
+
+pyenv-setup-python: _pyenv-install-python _pyenv-recreate-venv
+
+_python-version-check:
+	@sys_mm=""; \
+	if command -v python3 >/dev/null 2>&1; then \
+		sys_mm="$$(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"; \
+	fi; \
+	if [ ! -x "$(VENV_PYTHON)" ]; then \
+		if [ "$$sys_mm" = "$(PYTHON_MAJOR_MINOR)" ]; then \
+			echo "System python3 is $(PYTHON_MAJOR_MINOR).x; creating $(VENV_DIR) from system python3"; \
+			python3 -m venv $(VENV_DIR); \
+		else \
+			echo "System python3 is '$$sys_mm' (expected $(PYTHON_MAJOR_MINOR).x). Running: make pyenv-setup-python"; \
+			$(MAKE) pyenv-setup-python; \
+		fi; \
+	fi; \
+	actual="$$($(VENV_PYTHON) -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"; \
+	actual_mm="$$($(VENV_PYTHON) -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"; \
+	if [ "$$actual_mm" != "$(PYTHON_MAJOR_MINOR)" ]; then \
+		if [ "$$sys_mm" = "$(PYTHON_MAJOR_MINOR)" ]; then \
+			echo "Recreating $(VENV_DIR) from system python3 ($(PYTHON_MAJOR_MINOR).x)"; \
+			rm -rf $(VENV_DIR); \
+			python3 -m venv $(VENV_DIR); \
+		else \
+			echo "Python version mismatch for tests: expected $(PYTHON_MAJOR_MINOR).x, found $$actual"; \
+			echo "Running: make pyenv-setup-python"; \
+			$(MAKE) pyenv-setup-python; \
+		fi; \
+		actual="$$($(VENV_PYTHON) -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"; \
+		actual_mm="$$($(VENV_PYTHON) -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"; \
+		if [ "$$actual_mm" != "$(PYTHON_MAJOR_MINOR)" ]; then \
+			echo "Python version still mismatched after setup: expected $(PYTHON_MAJOR_MINOR).x, found $$actual"; \
+			exit 1; \
+		fi; \
+	fi
+
+$(DEPS_STAMP): requirements-dev.txt requirements.txt src/web/backend/requirements.txt src/scrapers/proxy/requirements.txt src/scrapers/airflow/requirements.txt
 	$(VENV_PYTHON) -m pip install -r requirements-dev.txt
 	touch $(DEPS_STAMP)
 
-deps: $(DEPS_STAMP)
+deps: _python-version-check $(DEPS_STAMP)
+
+coverage-rc:
+	@printf "[run]\nsource = src\nomit = %s\n\n[report]\nomit = %s\n" "$(COVERAGE_OMIT)" "$(COVERAGE_OMIT)" > $(COVERAGE_RCFILE)
 
 lint: deps
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m ruff check src tst integration --select E9,F63,F7,F82
+	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m ruff check src tst integration
 
 build: lint compile test
 
-test-unit: deps
-	$(VENV_PYTHON) -m coverage erase
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/proxy -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/common -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/airflow -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/web/backend -p "test_*.py"
-	$(VENV_PYTHON) -m coverage report -m --fail-under=$(COVERAGE_FAIL_UNDER)
-	$(VENV_PYTHON) -m coverage html
+test-unit: deps coverage-rc _python-version-check
+	@echo "=== UNIT TEST START ==="
+	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib --disable-warnings -p no:warnings \
+		--cov=src --cov-config=$(COVERAGE_RCFILE) --cov-report=term-missing --cov-report=html --cov-fail-under=$(COVERAGE_FAIL_UNDER) \
+		$(UNIT_TEST_START_DIR)
 	@echo "Coverage HTML report: htmlcov/index.html"
 	$(MAKE) test-frontend
 
@@ -87,38 +163,28 @@ test-frontend:
 	npm --prefix src/web/frontend install
 	npm --prefix src/web/frontend run test:coverage
 
-test-integration: deps
-	PYTHONWARNINGS=ignore::ResourceWarning PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m unittest discover -s integration/scrapers/proxy -p "test_*.py" -v
-	PYTHONWARNINGS=ignore::ResourceWarning PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m unittest discover -s integration/scrapers/airflow -p "test_*.py" -v
-	PYTHONWARNINGS=ignore::ResourceWarning PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m unittest discover -s integration/web/backend -p "test_*.py" -v
+test-integration: deps _python-version-check
+	@echo "=== INTEGRATION TEST START ==="
+	PYTHONWARNINGS=ignore::ResourceWarning PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib integration
 
 test: test-unit test-integration
 
 test-all: test
 
-test-proxy: deps
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m unittest discover -s tst/scrapers/proxy -p "test_*.py"
+coverage: deps coverage-rc _python-version-check
+	@echo "=== UNIT TEST START ==="
+	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib --disable-warnings -p no:warnings \
+		--cov=src --cov-config=$(COVERAGE_RCFILE) --cov-report=term-missing --cov-fail-under=$(COVERAGE_FAIL_UNDER) \
+		$(UNIT_TEST_START_DIR)
 
-test-proxy-verbose: deps
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m unittest discover -s tst/scrapers/proxy -p "test_*.py" -v
-
-coverage: deps
-	$(VENV_PYTHON) -m coverage erase
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/proxy -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/common -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/airflow -p "test_*.py"
-	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/web/backend -p "test_*.py"
-	$(VENV_PYTHON) -m coverage report -m --fail-under=$(COVERAGE_FAIL_UNDER)
-
-coverage-html: deps
+coverage-html: deps coverage-rc _python-version-check
 	@if [ ! -f .coverage ]; then \
-		$(VENV_PYTHON) -m coverage erase; \
-		PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/proxy -p "test_*.py"; \
-		PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/common -p "test_*.py"; \
-		PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/scrapers/airflow -p "test_*.py"; \
-		PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m coverage run -a $(COVERAGE_RUN_ARGS) -m unittest discover -s tst/web/backend -p "test_*.py"; \
+		echo "=== UNIT TEST START ==="; \
+		PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib --disable-warnings -p no:warnings \
+			--cov=src --cov-config=$(COVERAGE_RCFILE) --cov-report=term-missing --cov-fail-under=$(COVERAGE_FAIL_UNDER) \
+			$(UNIT_TEST_START_DIR); \
 	fi
-	$(VENV_PYTHON) -m coverage html
+	$(VENV_PYTHON) -m coverage html --rcfile=$(COVERAGE_RCFILE)
 	@echo "Coverage HTML report: htmlcov/index.html"
 
 compile: deps
@@ -131,6 +197,7 @@ clean:
 	find . -type d -name ".ruff_cache" -prune -exec rm -rf {} +
 	rm -f .coverage
 	rm -f .coverage.*
+	rm -f .python-version
 	rm -rf htmlcov
 	rm -rf $(VENV_DIR)
 
@@ -197,18 +264,6 @@ db-failures:
 		 WHERE status = 'failed' \
 		 ORDER BY updated_at DESC \
 		 LIMIT $(LIMIT);"; \
-	fi
-
-proxy-state:
-	@if [ -n "$(SCOPE)" ]; then \
-		echo "=== proxy sizes: $(SCOPE) ==="; \
-		$(DOCKER_COMPOSE) exec -T proxy-api python /opt/jobsearch/src/scrapers/proxy/scripts/proxy_api_cli.py sizes --scope "$(SCOPE)"; \
-	else \
-		for scope in $(PROXY_SCOPES); do \
-			echo "=== proxy sizes: $$scope ==="; \
-			$(DOCKER_COMPOSE) exec -T proxy-api python /opt/jobsearch/src/scrapers/proxy/scripts/proxy_api_cli.py sizes --scope "$$scope" || exit $$?; \
-			echo ""; \
-		done; \
 	fi
 
 airflow-open:

@@ -7,6 +7,8 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.coveragerc.test
+.python-version
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

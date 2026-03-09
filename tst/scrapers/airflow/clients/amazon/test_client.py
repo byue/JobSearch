@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from scrapers.airflow.clients.amazon.client import AmazonJobsClient
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 
@@ -49,6 +51,18 @@ class AmazonClientTest(unittest.TestCase):
                 client.get_job_details(job_id="1")
         with patch.object(client.transport, "get_json", return_value={"jobs": "bad"}):
             with self.assertRaises(ValueError):
+                client.get_job_details(job_id="1")
+        http_404 = requests.exceptions.HTTPError("not found")
+        http_404.response = requests.Response()
+        http_404.response.status_code = 404
+        with patch.object(client.transport, "get_json", side_effect=http_404):
+            details = client.get_job_details(job_id="1")
+            self.assertEqual(details.status, 404)
+        http_500 = requests.exceptions.HTTPError("server error")
+        http_500.response = requests.Response()
+        http_500.response.status_code = 500
+        with patch.object(client.transport, "get_json", side_effect=http_500):
+            with self.assertRaises(requests.exceptions.HTTPError):
                 client.get_job_details(job_id="1")
 
     def test_get_jobs_has_next_fallback_and_details_edge_cases(self) -> None:

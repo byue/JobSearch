@@ -113,6 +113,32 @@ class NetflixClientTest(unittest.TestCase):
             assert details.job is not None
             self.assertEqual(details.job.minimumQualifications, ["x"])
 
+    def test_get_job_details_api_http_404_returns_not_found(self) -> None:
+        client = self._client()
+        http_404 = requests.exceptions.HTTPError("not found")
+        http_404.response = requests.Response()
+        http_404.response.status_code = 404
+        with patch.object(client, "_extract_description_from_job_page", return_value=None), patch.object(
+            client,
+            "_get_jobs_payload",
+            side_effect=http_404,
+        ):
+            details = client.get_job_details(job_id="1")
+            self.assertEqual(details.status, 404)
+
+    def test_get_job_details_api_non_404_http_error_reraises(self) -> None:
+        client = self._client()
+        http_500 = requests.exceptions.HTTPError("server error")
+        http_500.response = requests.Response()
+        http_500.response.status_code = 500
+        with patch.object(client, "_extract_description_from_job_page", return_value=None), patch.object(
+            client,
+            "_get_jobs_payload",
+            side_effect=http_500,
+        ):
+            with self.assertRaises(requests.exceptions.HTTPError):
+                client.get_job_details(job_id="1")
+
     def test_get_job_details_missing_page_and_api_description_is_retryable(self) -> None:
         client = self._client()
         with patch.object(client, "_extract_description_from_job_page", return_value=None), patch.object(

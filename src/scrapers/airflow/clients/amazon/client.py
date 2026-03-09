@@ -6,6 +6,8 @@ import urllib.parse
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+import requests
+
 from scrapers.airflow.clients.amazon.parser import parse_job_details, parse_job_metadata, to_int, to_optional_str
 from scrapers.airflow.clients.amazon.transport import AmazonTransport
 from scrapers.airflow.clients.common.base import JobsClient
@@ -112,16 +114,26 @@ class AmazonJobsClient(JobsClient):
             f"{urllib.parse.urlencode([('job_id_icims[]', normalized_job_id), ('offset', '0'), ('result_limit', '1'), ('sort', 'relevant')])}"
         )
 
-        payload = self.transport.get_json(
-            self.SEARCH_PATH,
-            params=[
-                ("job_id_icims[]", normalized_job_id),
-                ("offset", "0"),
-                ("result_limit", "1"),
-                ("sort", "relevant"),
-            ],
-            request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
-        )
+        try:
+            payload = self.transport.get_json(
+                self.SEARCH_PATH,
+                params=[
+                    ("job_id_icims[]", normalized_job_id),
+                    ("offset", "0"),
+                    ("result_limit", "1"),
+                    ("sort", "relevant"),
+                ],
+                request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
+            )
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 404:
+                return AmazonJobDetailsResponseSchema(
+                    status=404,
+                    error=f"Job '{normalized_job_id}' not found for company 'amazon' url={detail_query_url}",
+                    job=None,
+                )
+            raise
         jobs_raw = payload.get("jobs")
         if not isinstance(jobs_raw, list):
             raise ValueError(

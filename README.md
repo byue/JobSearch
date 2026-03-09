@@ -135,8 +135,15 @@ flowchart TB
 
 ## Prerequisites
 - Docker + Docker Compose
-- Python 3.12+
+- Python 3.14+
 - Node.js + npm (for frontend tests)
+
+## Python Setup (Optional via pyenv)
+If you want a consistent local Python (default `3.14.0`) managed by `pyenv` and a recreated project virtualenv:
+
+```bash
+make pyenv-setup-python
+```
 
 ## Local Development
 Start all local services:
@@ -182,6 +189,8 @@ Unit + coverage:
 ```bash
 make test-unit
 ```
+
+Note: frontend coverage enforces 100% statement coverage via Vitest thresholds.
 
 Integration tests:
 

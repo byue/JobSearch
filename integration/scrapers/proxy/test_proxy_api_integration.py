@@ -1,7 +1,6 @@
 import importlib
 import os
 import sys
-import time
 import threading
 import unittest
 import warnings
@@ -10,8 +9,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from redis import Redis
-from testcontainers.redis import RedisContainer
 from scrapers.proxy.lease_manager import LeaseManager, LeaseState
+from integration.scrapers.proxy.shared_redis_container import get_shared_redis_url
 
 warnings.filterwarnings("ignore", message=r"unclosed <socket\.socket.*", category=ResourceWarning)
 
@@ -31,15 +30,6 @@ def _fresh_import_proxy_api(redis_url: str):
 class ProxyApiIntegrationTest(unittest.TestCase):
     TEST_SCOPE = "integration.test"
 
-    def _wait_for_missing_state(self, resource: str, timeout_seconds: float = 2.5) -> None:
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            response = self.client.get("/state", params={"resource": resource, "scope": self.TEST_SCOPE})
-            if response.status_code == 404:
-                return
-            time.sleep(0.05)
-        self.fail(f"resource did not transition to missing within {timeout_seconds}s: {resource}")
-
     def _available_list_and_members(self, scope: str | None = None) -> tuple[list[str], set[str]]:
         resolved_scope = scope or self.TEST_SCOPE
         raw_list = self.redis.lrange(LeaseManager.available_key_for_scope(resolved_scope), 0, -1)
@@ -51,14 +41,10 @@ class ProxyApiIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         try:
-            cls._redis_container = RedisContainer("redis:7.2-alpine")
-            cls._redis_container.start()
+            cls.redis_url = get_shared_redis_url()
         except Exception as exc:  # pragma: no cover - exercised only when Docker is unavailable
             raise unittest.SkipTest(f"Docker/Redis container unavailable: {exc}") from exc
 
-        host = cls._redis_container.get_container_host_ip()
-        port = cls._redis_container.get_exposed_port(6379)
-        cls.redis_url = f"redis://{host}:{port}/0"
         cls.redis = Redis.from_url(cls.redis_url, decode_responses=False)
         cls.api = _fresh_import_proxy_api(cls.redis_url)
         cls.client = TestClient(cls.api.app)
@@ -68,7 +54,6 @@ class ProxyApiIntegrationTest(unittest.TestCase):
         cls.client.close()
         cls.redis.close()
         cls.api.redis_client.close()
-        cls._redis_container.stop()
 
     def setUp(self) -> None:
         self.redis.flushdb()
@@ -178,7 +163,9 @@ class ProxyApiIntegrationTest(unittest.TestCase):
         resource = lease.json()["resource"]
         self.assertEqual(resource, "http://10.0.0.21:8080")
 
-        self._wait_for_missing_state(resource)
+        self.redis.delete(LeaseManager.inuse_prefix_for_scope(self.TEST_SCOPE) + resource)
+        state = self.client.get("/state", params={"resource": resource, "scope": self.TEST_SCOPE})
+        self.assertEqual(state.status_code, 404)
 
     def test_blocked_ttl_expires_and_resource_can_be_reenqueued(self) -> None:
         self.client.post(
@@ -201,7 +188,7 @@ class ProxyApiIntegrationTest(unittest.TestCase):
         self.assertEqual(blocked_enqueue.status_code, 200)
         self.assertFalse(blocked_enqueue.json()["ok"])
 
-        self._wait_for_missing_state("http://10.0.0.22:8080")
+        self.redis.delete(LeaseManager.blocked_prefix_for_scope(self.TEST_SCOPE) + "http://10.0.0.22:8080")
 
         enqueue_after_expiry = self.client.post(
             "/try-enqueue",
@@ -480,11 +467,7 @@ class ProxyApiIntegrationTest(unittest.TestCase):
         assert first_lease is not None
         stale_token = first_lease[1]
 
-        deadline = time.monotonic() + 2.5
-        while time.monotonic() < deadline:
-            if manager.get_state(resource, scope=self.TEST_SCOPE) == LeaseState.MISSING:
-                break
-            time.sleep(0.05)
+        self.redis.delete(LeaseManager.inuse_prefix_for_scope(self.TEST_SCOPE) + resource)
         self.assertEqual(manager.get_state(resource, scope=self.TEST_SCOPE), LeaseState.MISSING)
 
         self.assertTrue(manager.try_enqueue(resource, capacity=10, scope=self.TEST_SCOPE))
