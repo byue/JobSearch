@@ -30,7 +30,7 @@ PYENV_BIN ?= $(PYENV_ROOT)/bin/pyenv
 PYENV_INSTALL_FLAGS ?= -v -s
 PYENV_MAKE_JOBS ?= $(shell nproc)
 
-.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open airflow-runs airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
+.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open airflow-runs airflow-run-tasks airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
 
 help:
 	@echo "Targets:"
@@ -65,6 +65,7 @@ help:
 	@echo "  make proxy-state        - Show proxy sizes by scope (or state with RESOURCE + PROXY_SCOPE)"
 	@echo "  make airflow-open       - Open Airflow UI in browser (http://localhost:8080)"
 	@echo "  make airflow-runs       - List recent DAG runs (use DAG_ID=<id>)"
+	@echo "  make airflow-run-tasks  - List recent DAG runs + active task instance counts (optional RUN_ID=<id>)"
 	@echo "  make airflow-run-stop   - Stop DAG run by marking it failed (RUN_ID=<run_id>)"
 	@echo "  make web-open           - Open web frontend in browser (http://localhost:5173)"
 	@echo "  make airflow-schedule-enable  - Unpause DAG schedule (DAG_ID=$(DAG_ID))"
@@ -342,6 +343,107 @@ airflow-open:
 
 airflow-runs:
 	$(DOCKER_COMPOSE) exec airflow-webserver airflow dags list-runs $(DAG_ID) --no-backfill
+
+airflow-run-tasks:
+	@echo "=== TASK INSTANCE STATE COUNTS (latest $(LIMIT) runs) ==="
+	@if [ -n "$(RUN_ID)" ]; then \
+		$(DOCKER_COMPOSE) exec -T postgres psql -U airflow -d airflow -c \
+		"WITH agg AS ( \
+		   SELECT ti.dag_id, ti.run_id, ti.task_id, \
+		          SUM(CASE WHEN ti.state='scheduled' THEN 1 ELSE 0 END) AS scheduled, \
+		          SUM(CASE WHEN ti.state='running' THEN 1 ELSE 0 END) AS running, \
+		          SUM(CASE WHEN ti.state='queued' THEN 1 ELSE 0 END) AS queued, \
+		          SUM(CASE WHEN ti.state='failed' THEN 1 ELSE 0 END) AS failed, \
+		          SUM(CASE WHEN ti.state='success' THEN 1 ELSE 0 END) AS success, \
+		          SUM(CASE WHEN ti.state='skipped' THEN 1 ELSE 0 END) AS skipped, \
+		          MIN(ti.start_date) AS task_start_time, \
+		          MAX(ti.end_date) AS task_end_time \
+		   FROM task_instance ti \
+		   WHERE ti.dag_id='$(DAG_ID)' \
+		     AND ti.run_id='$(RUN_ID)' \
+		   GROUP BY ti.dag_id, ti.run_id, ti.task_id \
+		 ) \
+		 SELECT dag_id, run_id, task_id, \
+		        CASE \
+		          WHEN running > 0 THEN 'running' \
+		          WHEN queued > 0 THEN 'queued' \
+		          WHEN scheduled > 0 THEN 'scheduled' \
+		          WHEN failed > 0 AND success = 0 AND skipped = 0 THEN 'failed' \
+		          WHEN success > 0 AND failed = 0 AND running = 0 AND queued = 0 AND scheduled = 0 THEN 'success' \
+		          WHEN skipped > 0 AND failed = 0 AND running = 0 AND queued = 0 AND scheduled = 0 AND success = 0 THEN 'skipped' \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN 'pending' \
+		          ELSE 'mixed' \
+		        END AS status, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          ELSE task_start_time \
+		        END AS task_start_time, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          ELSE task_end_time \
+		        END AS task_end_time, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          WHEN task_start_time IS NULL THEN NULL \
+		          WHEN task_end_time IS NULL THEN EXTRACT(EPOCH FROM (NOW() - task_start_time))::bigint \
+		          ELSE EXTRACT(EPOCH FROM (task_end_time - task_start_time))::bigint \
+		        END AS \"duration (s)\", \
+		        scheduled, running, queued, failed, success, skipped \
+		 FROM agg \
+		 ORDER BY dag_id, run_id DESC, task_start_time NULLS LAST, task_id;"; \
+	else \
+		$(DOCKER_COMPOSE) exec -T postgres psql -U airflow -d airflow -c \
+		"WITH latest_runs AS ( \
+		   SELECT run_id \
+		   FROM dag_run \
+		   WHERE dag_id='$(DAG_ID)' \
+		   ORDER BY queued_at DESC NULLS LAST \
+		   LIMIT $(LIMIT) \
+		 ), \
+		 agg AS ( \
+		 SELECT ti.dag_id, ti.run_id, ti.task_id, \
+		        SUM(CASE WHEN ti.state='scheduled' THEN 1 ELSE 0 END) AS scheduled, \
+		        SUM(CASE WHEN ti.state='running' THEN 1 ELSE 0 END) AS running, \
+		        SUM(CASE WHEN ti.state='queued' THEN 1 ELSE 0 END) AS queued, \
+		        SUM(CASE WHEN ti.state='failed' THEN 1 ELSE 0 END) AS failed, \
+		        SUM(CASE WHEN ti.state='success' THEN 1 ELSE 0 END) AS success, \
+		        SUM(CASE WHEN ti.state='skipped' THEN 1 ELSE 0 END) AS skipped, \
+		        MIN(ti.start_date) AS task_start_time, \
+		        MAX(ti.end_date) AS task_end_time \
+		 FROM task_instance ti \
+		 JOIN latest_runs lr ON lr.run_id = ti.run_id \
+		 WHERE ti.dag_id='$(DAG_ID)' \
+		 GROUP BY ti.dag_id, ti.run_id, ti.task_id \
+		 ) \
+		 SELECT dag_id, run_id, task_id, \
+		        CASE \
+		          WHEN running > 0 THEN 'running' \
+		          WHEN queued > 0 THEN 'queued' \
+		          WHEN scheduled > 0 THEN 'scheduled' \
+		          WHEN failed > 0 AND success = 0 AND skipped = 0 THEN 'failed' \
+		          WHEN success > 0 AND failed = 0 AND running = 0 AND queued = 0 AND scheduled = 0 THEN 'success' \
+		          WHEN skipped > 0 AND failed = 0 AND running = 0 AND queued = 0 AND scheduled = 0 AND success = 0 THEN 'skipped' \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN 'pending' \
+		          ELSE 'mixed' \
+		        END AS status, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          ELSE task_start_time \
+		        END AS task_start_time, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          ELSE task_end_time \
+		        END AS task_end_time, \
+		        CASE \
+		          WHEN scheduled = 0 AND running = 0 AND queued = 0 AND failed = 0 AND success = 0 AND skipped = 0 THEN NULL \
+		          WHEN task_start_time IS NULL THEN NULL \
+		          WHEN task_end_time IS NULL THEN EXTRACT(EPOCH FROM (NOW() - task_start_time))::bigint \
+		          ELSE EXTRACT(EPOCH FROM (task_end_time - task_start_time))::bigint \
+		        END AS \"duration (s)\", \
+		        scheduled, running, queued, failed, success, skipped \
+		 FROM agg \
+		 ORDER BY dag_id, run_id DESC, task_start_time NULLS LAST, task_id;"; \
+	fi
 
 airflow-run-stop:
 	@if [ -z "$(RUN_ID)" ]; then \

@@ -449,15 +449,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
     def test_task_get_job_details_invalid_raises(self) -> None:
         fn = self.tasks["jobs_get_details"].fn
         run_info = {"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}
-        job = SimpleNamespace(
-            jobDescription="desc",
-            minimumQualifications=[],
-            preferredQualifications=[],
-            responsibilities=[],
-            payDetails=None,
-            postedTs=None,
-        )
-        response = SimpleNamespace(status=200, error=None, job=job)
+        response = SimpleNamespace(status=200, error=None, job=None)
         client = SimpleNamespace(get_job_details=lambda job_id: response)
         with patch.object(self.mod, "build_client", return_value=client), patch.object(self.mod, "ProxyManagementClient"):
             with self.assertRaises(ValueError):
