@@ -392,14 +392,18 @@ def job_scrapers_local_dag() -> None:
                 "error": response.error,
                 "job_detail_written": False,
             }
-        if not (200 <= status < 400) or response.job is None or response.job.payDetails is None:
+        if not (200 <= status < 400) or response.job is None or response.job.jobDescription is None:
             raise ValueError(
                 "Detail fetch did not meet success criteria: "
                 f"company={company} job_id={job_id} status={status} "
                 f"has_job={response.job is not None} "
-                f"has_pay_details={response.job is not None and response.job.payDetails is not None}"
+                f"has_job_description={response.job is not None and response.job.jobDescription is not None}"
             )
-        pay_details = response.job.payDetails.model_dump(mode="json")
+        pay_details = (
+            response.job.payDetails.model_dump(mode="json")
+            if response.job.payDetails is not None
+            else None
+        )
         posted_ts = getattr(response.job, "postedTs", None)
         job_payload: dict[str, Any] = {
             "job_description": response.job.jobDescription,
