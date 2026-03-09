@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
-      - airflow_postgres_data:/var/lib/postgresql/data
+      - airflow_postgres_data_latest:/var/lib/postgresql
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "airflow"]
       interval: 10s
@@ -54,7 +54,7 @@ services:
       "
 
   scraper-db-init:
-    image: postgres:16
+    image: postgres:latest
     depends_on:
       postgres:
         condition: service_healthy
@@ -241,7 +241,7 @@ services:
       - "5173:80"
 
 volumes:
-  airflow_postgres_data:
+  airflow_postgres_data_latest:
   airflow_logs:
   airflow_plugins:
   minio_data:
