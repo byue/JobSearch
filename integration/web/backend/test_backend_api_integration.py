@@ -2,7 +2,6 @@ import importlib
 import json
 import os
 import sys
-import time
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -10,7 +9,7 @@ from unittest.mock import patch
 import psycopg
 from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
-from testcontainers.core.container import DockerContainer
+from testcontainers.postgres import PostgresContainer
 
 
 def _fresh_import_backend_main(db_url: str, page_size: int = 2):
@@ -23,33 +22,17 @@ def _fresh_import_backend_main(db_url: str, page_size: int = 2):
 class WebBackendIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls._pg = (
-            DockerContainer("postgres:16")
-            .with_env("POSTGRES_USER", "airflow")
-            .with_env("POSTGRES_PASSWORD", "airflow")
-            .with_env("POSTGRES_DB", "airflow")
-            .with_exposed_ports(5432)
+        cls._pg = PostgresContainer(
+            image="postgres:16",
+            username="airflow",
+            password="airflow",
+            dbname="airflow",
         )
         cls._pg.start()
 
         host = cls._pg.get_container_host_ip()
         port = cls._pg.get_exposed_port(5432)
         cls.db_url = f"postgresql://airflow:airflow@{host}:{port}/airflow"
-
-        deadline = time.time() + 45
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            try:
-                with psycopg.connect(cls.db_url) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT 1")
-                last_error = None
-                break
-            except Exception as exc:
-                last_error = exc
-                time.sleep(1)
-        if last_error is not None:
-            raise RuntimeError(f"Postgres test container did not become ready: {last_error}")
 
         with open("src/sql/init.sql", "r", encoding="utf-8") as fh:
             schema_sql = fh.read()

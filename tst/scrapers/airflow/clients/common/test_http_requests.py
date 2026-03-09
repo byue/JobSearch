@@ -336,7 +336,7 @@ class HttpRequestsTest(unittest.TestCase):
         self.assertFalse(http._should_block_proxy(other_error))
 
     def test_session_backoff_retries_on_connection_error(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5, backoff_factor=0.0)
         error = requests.exceptions.RequestException("Failed to connect to target")
         with patch("scrapers.airflow.clients.common.http_requests.browser_request", side_effect=error) as br:
             with self.assertRaises(requests.exceptions.RequestException):
@@ -349,7 +349,7 @@ class HttpRequestsTest(unittest.TestCase):
         self.assertEqual(br.call_count, 5)
 
     def test_bytes_backoff_retries_on_connection_error(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5, backoff_factor=0.0)
         proxy_client = Mock()
         error = requests.exceptions.RequestException("Connection timed out after 2000 milliseconds")
         with patch(
@@ -518,7 +518,7 @@ class HttpRequestsTest(unittest.TestCase):
             )
 
     def test_request_text_with_managed_proxy_backoff_retries_on_connection_error(self) -> None:
-        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5)
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=5, backoff_factor=0.0)
         proxy_client = Mock()
         error = requests.exceptions.RequestException("Failed to connect to target")
         with patch(

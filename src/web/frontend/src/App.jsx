@@ -27,6 +27,17 @@ export function toCompanyOption(value) {
   };
 }
 
+export function chooseSelectedCompany(previous, options) {
+  if (previous && options.some((option) => option.value === previous)) {
+    return previous;
+  }
+  return options[0]?.value ?? "";
+}
+
+export function normalizeCompany(value) {
+  return String(value ?? "").trim();
+}
+
 export function formatPosted(ts) {
   if (!ts) {
     return "—";
@@ -161,6 +172,17 @@ export default function App() {
     [applyHref, detailsPageHref]
   );
 
+  function resetSearchResults(resetPage = false) {
+    setPositions([]);
+    setTotalResults(null);
+    setPageSize(null);
+    setTotalPagesFromApi(null);
+    setHasNextPage(false);
+    if (resetPage) {
+      setPage(1);
+    }
+  }
+
   async function loadCompanies() {
     setCompaniesLoading(true);
     try {
@@ -172,38 +194,19 @@ export default function App() {
         throw new Error("No companies returned by API.");
       }
       setCompanyOptions(options);
-      setSelectedCompany((previous) => {
-        if (previous && options.some((option) => option.value === previous)) {
-          return previous;
-        }
-        return options[0].value;
-      });
+      setSelectedCompany((previous) => chooseSelectedCompany(previous, options));
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Failed to load companies.");
       setCompanyOptions([]);
       setSelectedCompany("");
-      setPositions([]);
-      setTotalResults(null);
-      setPageSize(null);
-      setTotalPagesFromApi(null);
-      setHasNextPage(false);
-      setPage(1);
+      resetSearchResults(true);
     } finally {
       setCompaniesLoading(false);
     }
   }
 
   async function searchJobs(targetPage, company = selectedCompany) {
-    const normalizedCompany = String(company ?? "").trim();
-    if (!normalizedCompany) {
-      setPositions([]);
-      setTotalResults(null);
-      setPageSize(null);
-      setTotalPagesFromApi(null);
-      setHasNextPage(false);
-      setPage(1);
-      return;
-    }
+    const normalizedCompany = normalizeCompany(company);
 
     const normalizedSearchBody = {
       company: normalizedCompany,
@@ -230,11 +233,7 @@ export default function App() {
       );
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Search request failed.");
-      setPositions([]);
-      setTotalResults(null);
-      setPageSize(null);
-      setTotalPagesFromApi(null);
-      setHasNextPage(false);
+      resetSearchResults();
     } finally {
       setIsLoading(false);
     }
@@ -498,7 +497,7 @@ export default function App() {
               <div className="details-content">
                 <h3>{detailsName}</h3>
                 <div className="details-meta">
-                  <span>{jobDetails._companyName || companyLabelByValue[activePosition?.company] || "Company"}</span>
+                  <span>{jobDetails._companyName}</span>
                   <span>Posted: {formatPosted(detailsPostedTs)}</span>
                 </div>
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import requests
+
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.http_requests import build_get_url
@@ -94,11 +96,21 @@ class MicrosoftJobsClient(JobsClient):
             params=detail_params,
         )
 
-        payload = self.transport.get_json(
-            "/api/pcsx/position_details",
-            params=detail_params,
-            request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
-        )
+        try:
+            payload = self.transport.get_json(
+                "/api/pcsx/position_details",
+                params=detail_params,
+                request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
+            )
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 404:
+                return MicrosoftJobDetailsResponseSchema(
+                    status=404,
+                    error=f"Job '{position_id}' not found for company 'microsoft' url={details_url}",
+                    job=None,
+                )
+            raise
         status = payload.get("status", 200)
         if status == 404:
             upstream_error = payload.get("error")

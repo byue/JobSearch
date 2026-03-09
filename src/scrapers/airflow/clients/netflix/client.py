@@ -193,13 +193,23 @@ class NetflixJobsClient(JobsClient):
             ],
         )
 
-        payload = self._get_jobs_payload(
-            params=[
-                ("domain", self.domain),
-                ("pid", normalized_job_id),
-            ],
-            request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
-        )
+        try:
+            payload = self._get_jobs_payload(
+                params=[
+                    ("domain", self.domain),
+                    ("pid", normalized_job_id),
+                ],
+                request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
+            )
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code == 404:
+                return NetflixJobDetailsResponseSchema(
+                    status=404,
+                    error=f"Job '{normalized_job_id}' not found for company 'netflix' url={detail_query_url}",
+                    job=None,
+                )
+            raise
 
         positions_raw = payload.get("positions")
         if not isinstance(positions_raw, list):

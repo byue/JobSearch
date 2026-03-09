@@ -12,7 +12,7 @@ from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.google import parser
 from scrapers.airflow.clients.google.transport import GoogleTransport
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
-from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
+from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse
 
 if TYPE_CHECKING:
     from scrapers.proxy.proxy_management_client import ProxyManagementClient

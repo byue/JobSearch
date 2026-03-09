@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import requests
+
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from scrapers.airflow.clients.microsoft.client import MicrosoftJobsClient
 
@@ -61,6 +63,23 @@ class MicrosoftClientTest(unittest.TestCase):
                 "not found url=https://apply.careers.microsoft.com/api/pcsx/position_details?position_id=missing-1&domain=microsoft.com&hl=en",
             )
             self.assertIsNone(details.job)
+
+    def test_get_job_details_http_404_and_non_404_error_handling(self) -> None:
+        client = self._client()
+        http_404 = requests.exceptions.HTTPError("not found")
+        http_404.response = requests.Response()
+        http_404.response.status_code = 404
+        with patch.object(client.transport, "get_json", side_effect=http_404):
+            details = client.get_job_details(job_id="missing-1")
+            self.assertEqual(details.status, 404)
+            self.assertIsNone(details.job)
+
+        http_500 = requests.exceptions.HTTPError("server error")
+        http_500.response = requests.Response()
+        http_500.response.status_code = 500
+        with patch.object(client.transport, "get_json", side_effect=http_500):
+            with self.assertRaises(requests.exceptions.HTTPError):
+                client.get_job_details(job_id="missing-1")
 
     def test_get_job_details_empty_200_payload_is_retryable(self) -> None:
         client = self._client()
