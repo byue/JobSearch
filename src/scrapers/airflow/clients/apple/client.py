@@ -11,7 +11,7 @@ import requests
 from scrapers.airflow.clients.apple import parser
 from scrapers.airflow.clients.apple.transport import AppleTransport
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
 
 if TYPE_CHECKING:

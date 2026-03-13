@@ -158,7 +158,7 @@ lint: deps
 
 build: lint compile test
 
-test-unit: deps coverage-rc _python-version-check
+test-unit: lint deps coverage-rc _python-version-check
 	@echo "=== UNIT TEST START ==="
 	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib --disable-warnings -p no:warnings \
 		--cov=src --cov-config=$(COVERAGE_RCFILE) --cov-report=term-missing --cov-report=html --cov-fail-under=$(COVERAGE_FAIL_UNDER) \
@@ -170,7 +170,7 @@ test-frontend:
 	npm --prefix src/web/frontend install
 	npm --prefix src/web/frontend run test:coverage
 
-test-integration: deps _python-version-check
+test-integration: lint deps _python-version-check
 	@echo "=== INTEGRATION TEST START ==="
 	PYTHONWARNINGS=ignore::ResourceWarning PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) -m pytest --import-mode=importlib integration
 

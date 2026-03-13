@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import os
+import unittest
+from unittest.mock import patch
+
+try:
+    import features.main as main_mod
+    from fastapi.testclient import TestClient
+    from features.main import app
+except ModuleNotFoundError:  # pragma: no cover - depends on local env
+    main_mod = None
+    TestClient = None
+    app = None
+
+
+@unittest.skipIf(main_mod is None, "fastapi test dependencies are not installed")
+class FeaturesMainHelpersTest(unittest.TestCase):
+    def test_env_helpers_fallback_and_override(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self.assertEqual(main_mod._technical_filepath(), main_mod._DEFAULT_TECHNICAL_PATH)
+            self.assertEqual(main_mod._keyword_filepath(), main_mod._DEFAULT_KEYWORD_PATH)
+            self.assertEqual(main_mod._spacy_model(), main_mod.DEFAULT_SPACY_MODEL)
+
+        with patch.dict(
+            os.environ,
+            {
+                "JOBSEARCH_FEATURES_TECHNICAL_PATH": " /tmp/technical.csv ",
+                "JOBSEARCH_FEATURES_KEYWORD_PATH": " /tmp/keywords.csv ",
+                "JOBSEARCH_FEATURES_SPACY_MODEL": " custom-model ",
+            },
+            clear=False,
+        ):
+            self.assertEqual(main_mod._technical_filepath(), "/tmp/technical.csv")
+            self.assertEqual(main_mod._keyword_filepath(), "/tmp/keywords.csv")
+            self.assertEqual(main_mod._spacy_model(), "custom-model")
+
+    def test_skill_extractor_is_cached(self) -> None:
+        main_mod._skill_extractor.cache_clear()
+        extractor = object()
+        with patch.object(main_mod, "SkillExtractor", return_value=extractor) as factory, patch.dict(
+            os.environ,
+            {},
+            clear=False,
+        ):
+            self.assertIs(main_mod._skill_extractor(), extractor)
+            self.assertIs(main_mod._skill_extractor(), extractor)
+        factory.assert_called_once_with(
+            technical_filepath=main_mod._DEFAULT_TECHNICAL_PATH,
+            keyword_filepath=main_mod._DEFAULT_KEYWORD_PATH,
+            spacy_model=main_mod.DEFAULT_SPACY_MODEL,
+        )
+        main_mod._skill_extractor.cache_clear()
+
+
+@unittest.skipIf(TestClient is None or app is None, "fastapi test dependencies are not installed")
+class FeaturesBackendTest(unittest.TestCase):
+    def test_get_job_skills_endpoint(self) -> None:
+        fake_extractor = type(
+            "FakeExtractor",
+            (),
+            {
+                "technical_filepath": "/tmp/technical_skills.csv",
+                "keyword_filepath": "/tmp/tech_keywords.csv",
+                "skills": {"Python"},
+                "extract": lambda self, text: ["Python"],
+            },
+        )()
+
+        with patch("features.main._skill_extractor", return_value=fake_extractor):
+            with TestClient(app) as client:
+                response = client.post("/job_skills", json={"text": "Need Python"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": 200,
+                "error": None,
+                "skills": ["Python"],
+            },
+        )
+
+    def test_get_job_skills_endpoint_validates_text(self) -> None:
+        fake_extractor = type(
+            "FakeExtractor",
+            (),
+            {
+                "technical_filepath": "/tmp/technical_skills.csv",
+                "keyword_filepath": "/tmp/tech_keywords.csv",
+                "skills": set(),
+                "extract": lambda self, text: [],
+            },
+        )()
+        with patch("features.main._skill_extractor", return_value=fake_extractor):
+            with TestClient(app) as client:
+                response = client.post("/job_skills", json={"text": ""})
+        self.assertEqual(response.status_code, 422)
+
+
+if __name__ == "__main__":
+    unittest.main()

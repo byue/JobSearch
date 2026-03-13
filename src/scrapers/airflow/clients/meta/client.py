@@ -16,7 +16,7 @@ import requests
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import (
     build_get_url,
     request_text_with_backoff,

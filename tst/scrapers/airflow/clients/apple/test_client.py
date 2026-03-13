@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from scrapers.airflow.clients.apple.client import AppleJobsClient
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 
 
 class AppleClientTest(unittest.TestCase):

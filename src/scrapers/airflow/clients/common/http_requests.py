@@ -11,7 +11,7 @@ from typing import Any
 import backoff
 import requests
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.proxy.browser_impersonator_client import browser_request, normalize_proxy_mapping
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 

@@ -11,7 +11,7 @@ import requests
 from scrapers.airflow.clients.amazon.parser import parse_job_details, parse_job_metadata, to_int, to_optional_str
 from scrapers.airflow.clients.amazon.transport import AmazonTransport
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
 
 if TYPE_CHECKING:

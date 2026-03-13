@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 

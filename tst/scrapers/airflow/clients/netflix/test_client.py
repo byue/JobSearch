@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import requests
 from web.backend.schemas import JobDetailsSchema
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.netflix.client import NetflixJobsClient, _dedupe, _require_mapping, _to_int, _to_optional_str
 
 

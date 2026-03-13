@@ -11,7 +11,7 @@ from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.http_requests import build_get_url
 from scrapers.airflow.clients.microsoft import parser
 from scrapers.airflow.clients.microsoft.transport import MicrosoftTransport, require_mapping
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
 
 if TYPE_CHECKING:

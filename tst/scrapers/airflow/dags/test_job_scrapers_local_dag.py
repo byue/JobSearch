@@ -104,7 +104,8 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             "scrapers.airflow.clients",
             "scrapers.airflow.clients.client_factory",
             "scrapers.airflow.clients.common",
-            "scrapers.airflow.clients.common.request_policy",
+            "common",
+            "common.request_policy",
             "scrapers.proxy",
             "scrapers.proxy.proxy_management_client",
             "scrapers.airflow.dags.job_scrapers_local_dag",
@@ -129,7 +130,9 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         clients_client_factory_mod = types.ModuleType("scrapers.airflow.clients.client_factory")
         clients_common_mod = types.ModuleType("scrapers.airflow.clients.common")
         clients_common_mod.__path__ = []  # package marker
-        clients_request_policy_mod = types.ModuleType("scrapers.airflow.clients.common.request_policy")
+        common_mod = types.ModuleType("common")
+        common_mod.__path__ = []  # package marker
+        clients_request_policy_mod = types.ModuleType("common.request_policy")
         proxy_mod = types.ModuleType("scrapers.proxy")
         proxy_mod.__path__ = []  # package marker
         proxy_management_client_mod = types.ModuleType("scrapers.proxy.proxy_management_client")
@@ -193,7 +196,8 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         sys.modules["scrapers.airflow.clients"] = clients_mod
         sys.modules["scrapers.airflow.clients.client_factory"] = clients_client_factory_mod
         sys.modules["scrapers.airflow.clients.common"] = clients_common_mod
-        sys.modules["scrapers.airflow.clients.common.request_policy"] = clients_request_policy_mod
+        sys.modules["common"] = common_mod
+        sys.modules["common.request_policy"] = clients_request_policy_mod
         sys.modules["scrapers.proxy"] = proxy_mod
         sys.modules["scrapers.proxy.proxy_management_client"] = proxy_management_client_mod
         sys.modules.pop("scrapers.airflow.dags.job_scrapers_local_dag", None)

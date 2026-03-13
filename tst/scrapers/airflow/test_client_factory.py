@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from scrapers.airflow.clients.client_factory import _resolve_endpoint_policies, build_client
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 
 
 class _DummyClient:
