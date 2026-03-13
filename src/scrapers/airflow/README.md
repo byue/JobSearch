@@ -4,7 +4,7 @@ This folder contains the local Airflow DAG that scrapes jobs, writes versioned D
 
 ## DAG
 - DAG ID: `job_scrapers_local`
-- Schedule: every 4 hours (`0 */4 * * *`)
+- Schedule: `0 */N * * *`, where `N = JOBSEARCH_AIRFLOW_SCHEDULE_HOURS`
 - File: `src/scrapers/airflow/dags/job_scrapers_local_dag.py`
 
 ## Current Task Flow
@@ -14,14 +14,16 @@ This folder contains the local Airflow DAG that scrapes jobs, writes versioned D
 4. `jobs_get_first_page` (mapped per company)
 5. `jobs_build_page_requests`
 6. `jobs_get_page` (mapped per company/page)
-7. `jobs_build_detail_requests`
-8. `jobs_get_details` (mapped per company/job_id)
-9. `verify_db_consistency`
-10. `update_publish_run`
-11. `publish_db_pointer`
+7. `jobs_copy_forward_details`
+8. `jobs_build_detail_requests`
+9. `jobs_get_details` (mapped per company/job_id)
+10. `verify_db_consistency`
+11. `update_publish_run`
+12. `publish_db_pointer`
 
 Notes:
 - Jobs are written to `jobs` during page scrape.
+- Matching `job_details` can be copied forward from the currently published run before detail fetches are built.
 - Details are written to `job_details` during detail scrape.
 - True detail `404` marks `jobs.is_missing_details = TRUE` and does not fail that item.
 - `verify_db_consistency` enforces:
