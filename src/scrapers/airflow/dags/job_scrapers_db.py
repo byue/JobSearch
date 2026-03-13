@@ -271,6 +271,153 @@ def upsert_job_details(
         engine.dispose()
 
 
+def fetch_latest_published_run_id(
+    db_url: str,
+    *,
+    exclude_run_id: str | None = None,
+) -> str | None:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT run_id
+                    FROM publication_pointers
+                    WHERE namespace = 'jobs_catalog'
+                      AND (:exclude_run_id IS NULL OR run_id <> :exclude_run_id)
+                    LIMIT 1
+                    """
+                ),
+                {"exclude_run_id": exclude_run_id},
+            ).mappings()
+            first_row = next(iter(row), None)
+            if first_row is None:
+                return None
+            run_id = first_row.get("run_id")
+            if run_id is None:
+                return None
+            return str(run_id)
+    finally:
+        engine.dispose()
+
+
+def copy_job_details_from_run(
+    db_url: str,
+    *,
+    source_run_id: str,
+    target_run_id: str,
+    target_version_ts: datetime,
+) -> int:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            inserted = conn.execute(
+                text(
+                    """
+                    INSERT INTO job_details (
+                        run_id,
+                        version_ts,
+                        company,
+                        external_job_id,
+                        job_description,
+                        minimum_qualifications,
+                        preferred_qualifications,
+                        responsibilities,
+                        pay_details,
+                        updated_at
+                    )
+                    SELECT
+                        :target_run_id,
+                        :target_version_ts,
+                        source.company,
+                        source.external_job_id,
+                        source.job_description,
+                        source.minimum_qualifications,
+                        source.preferred_qualifications,
+                        source.responsibilities,
+                        source.pay_details,
+                        now()
+                    FROM job_details source
+                    JOIN jobs target_jobs
+                      ON target_jobs.run_id = :target_run_id
+                     AND target_jobs.company = source.company
+                     AND target_jobs.external_job_id = source.external_job_id
+                    LEFT JOIN job_details existing
+                      ON existing.run_id = :target_run_id
+                     AND existing.company = source.company
+                     AND existing.external_job_id = source.external_job_id
+                    WHERE source.run_id = :source_run_id
+                      AND existing.external_job_id IS NULL
+                    """
+                ),
+                {
+                    "source_run_id": source_run_id,
+                    "target_run_id": target_run_id,
+                    "target_version_ts": target_version_ts,
+                },
+            )
+
+            conn.execute(
+                text(
+                    """
+                    UPDATE jobs target_jobs
+                    SET posted_ts = COALESCE(target_jobs.posted_ts, source_jobs.posted_ts),
+                        updated_at = now()
+                    FROM jobs source_jobs
+                    JOIN job_details source_details
+                      ON source_details.run_id = source_jobs.run_id
+                     AND source_details.company = source_jobs.company
+                     AND source_details.external_job_id = source_jobs.external_job_id
+                    WHERE target_jobs.run_id = :target_run_id
+                      AND source_jobs.run_id = :source_run_id
+                      AND target_jobs.company = source_jobs.company
+                      AND target_jobs.external_job_id = source_jobs.external_job_id
+                    """
+                ),
+                {
+                    "source_run_id": source_run_id,
+                    "target_run_id": target_run_id,
+                },
+            )
+            return int(inserted.rowcount or 0)
+    finally:
+        engine.dispose()
+
+
+def fetch_existing_job_detail_ids(
+    db_url: str,
+    *,
+    run_id: str,
+    companies: list[str],
+) -> dict[str, set[str]]:
+    detail_ids_by_company: dict[str, set[str]] = {company: set() for company in companies}
+    if not companies:
+        return detail_ids_by_company
+
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT company, external_job_id
+                    FROM job_details
+                    WHERE run_id = :run_id
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings()
+            for row in rows:
+                company = str(row["company"])
+                if company in detail_ids_by_company:
+                    detail_ids_by_company[company].add(str(row["external_job_id"]))
+    finally:
+        engine.dispose()
+
+    return detail_ids_by_company
+
+
 def fetch_consistency_counts(
     db_url: str,
     *,

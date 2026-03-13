@@ -288,6 +288,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             "jobs_get_first_page",
             "jobs_build_page_requests",
             "jobs_get_page",
+            "jobs_copy_forward_details",
             "jobs_build_detail_requests",
             "jobs_get_details",
             "verify_db_consistency",
@@ -392,21 +393,48 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 fn(run_info, "amazon", 1)
 
+    def test_task_copy_forward_details(self) -> None:
+        fn = self.tasks["jobs_copy_forward_details"].fn
+        run_info = {"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}
+
+        with patch.object(self.mod, "fetch_latest_published_run_id", return_value=None) as fetch_latest, patch.object(
+            self.mod, "copy_job_details_from_run"
+        ) as copy_job_details:
+            out = fn(run_info)
+        self.assertEqual(out["copied_count"], 0)
+        self.assertIsNone(out["source_run_id"])
+        fetch_latest.assert_called_once_with("postgresql://db", exclude_run_id="r1")
+        copy_job_details.assert_not_called()
+
+        with patch.object(self.mod, "fetch_latest_published_run_id", return_value="published-r0"), patch.object(
+            self.mod, "copy_job_details_from_run", return_value=2
+        ) as copy_job_details:
+            out = fn(run_info)
+        self.assertEqual(out["copied_count"], 2)
+        self.assertEqual(out["source_run_id"], "published-r0")
+        copy_job_details.assert_called_once()
+
     def test_task_build_detail_requests(self) -> None:
         fn = self.tasks["jobs_build_detail_requests"].fn
-        out = fn(
-            [
-                {"company": "amazon", "job_ids": ["a2", "a1"]},
-                {"company": "google", "job_ids": ["g1"]},
-                {"company": "amazon", "job_ids": ["a1"]},
-            ]
-        )
+        run_info = {"run_id": "r1"}
+        with patch.object(
+            self.mod,
+            "fetch_existing_job_detail_ids",
+            return_value={"amazon": {"a2"}, "google": set()},
+        ):
+            out = fn(
+                run_info,
+                [
+                    {"company": "amazon", "job_ids": ["a2", "a1"]},
+                    {"company": "google", "job_ids": ["g1"]},
+                    {"company": "amazon", "job_ids": ["a1"]},
+                ],
+            )
         self.assertEqual(
             out,
             [
                 {"company": "amazon", "job_id": "a1"},
                 {"company": "google", "job_id": "g1"},
-                {"company": "amazon", "job_id": "a2"},
             ],
         )
 

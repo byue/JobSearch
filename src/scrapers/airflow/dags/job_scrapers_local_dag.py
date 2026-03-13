@@ -13,6 +13,9 @@ from airflow.providers.standard.sensors.python import PythonSensor
 from airflow.sdk import dag, get_current_context, task
 
 from scrapers.airflow.dags.job_scrapers_db import (
+    copy_job_details_from_run,
+    fetch_existing_job_detail_ids,
+    fetch_latest_published_run_id,
     fetch_consistency_counts,
     mark_missing_details,
     publish_jobs_catalog_pointer,
@@ -341,8 +344,35 @@ def job_scrapers_local_dag() -> None:
             "success": True,
         }
 
+    @task(task_id="jobs_copy_forward_details")
+    def copy_forward_details(run_info: dict[str, str]) -> dict[str, Any]:
+        run_id = str(run_info["run_id"])
+        version_ts = datetime.fromisoformat(str(run_info["version_ts"]))
+        source_run_id = fetch_latest_published_run_id(db_url, exclude_run_id=run_id)
+        if source_run_id is None:
+            return {
+                "run_id": run_id,
+                "source_run_id": None,
+                "copied_count": 0,
+                "success": True,
+            }
+
+        copied_count = copy_job_details_from_run(
+            db_url,
+            source_run_id=source_run_id,
+            target_run_id=run_id,
+            target_version_ts=version_ts,
+        )
+        return {
+            "run_id": run_id,
+            "source_run_id": source_run_id,
+            "copied_count": copied_count,
+            "success": True,
+        }
+
     @task(task_id="jobs_build_detail_requests")
-    def build_detail_requests(page_results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    def build_detail_requests(run_info: dict[str, str], page_results: list[dict[str, Any]]) -> list[dict[str, str]]:
+        run_id = str(run_info["run_id"])
         job_ids_by_company: dict[str, set[str]] = {company: set() for company in companies}
 
         for page in page_results:
@@ -352,8 +382,17 @@ def job_scrapers_local_dag() -> None:
                 for job_id in page["job_ids"]:
                     company_ids.add(job_id)
 
+        existing_detail_ids_by_company = fetch_existing_job_detail_ids(
+            db_url,
+            run_id=run_id,
+            companies=list(job_ids_by_company.keys()),
+        )
+
         detail_requests: list[dict[str, str]] = []
-        ids_by_company = {company: sorted(ids) for company, ids in job_ids_by_company.items()}
+        ids_by_company = {
+            company: sorted(ids - existing_detail_ids_by_company.get(company, set()))
+            for company, ids in job_ids_by_company.items()
+        }
         max_company_jobs = max((len(ids) for ids in ids_by_company.values()), default=0)
         for idx in range(max_company_jobs):
             for company in companies:
@@ -606,7 +645,10 @@ def job_scrapers_local_dag() -> None:
     page_requests = build_page_requests(first_pages)
     page_results = get_jobs_page.partial(run_info=run_info).expand_kwargs(page_requests)
 
-    detail_requests = build_detail_requests(page_results)
+    copied_details = copy_forward_details(run_info)
+    page_results >> copied_details
+    detail_requests = build_detail_requests(run_info, page_results)
+    copied_details >> detail_requests
     detail_results = get_job_details.partial(run_info=run_info).expand_kwargs(detail_requests)
 
     verification_state = verify_db_consistency(run_info, page_results, detail_requests)

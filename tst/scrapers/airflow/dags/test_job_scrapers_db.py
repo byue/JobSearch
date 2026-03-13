@@ -15,6 +15,11 @@ class _FakeMappingsResult:
         return self._rows
 
 
+class _FakeExecuteResult:
+    def __init__(self, rowcount: int = 0) -> None:
+        self.rowcount = rowcount
+
+
 class _FakeConnection:
     def __init__(self, returns: list[object] | None = None, raise_on_execute: bool = False) -> None:
         self.calls: list[tuple[object, object]] = []
@@ -243,6 +248,86 @@ class JobScrapersDbTest(unittest.TestCase):
         self.assertEqual(missing, {"google": 1, "meta": 0})
         self.assertEqual(details, {"google": 2, "meta": 0})
         self.assertEqual(missing_desc, {"google": 1, "meta": 0})
+
+    def test_fetch_latest_published_run_id(self) -> None:
+        conn = _FakeConnection(returns=[_FakeMappingsResult([{"run_id": "published-run"}])])
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_latest_published_run_id("db", exclude_run_id="current-run")
+        self.assertTrue(engine.disposed)
+        self.assertEqual(out, "published-run")
+        self.assertEqual(conn.calls[0][1], {"exclude_run_id": "current-run"})
+
+    def test_fetch_latest_published_run_id_none_when_missing(self) -> None:
+        conn = _FakeConnection(returns=[_FakeMappingsResult([])])
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_latest_published_run_id("db")
+        self.assertTrue(engine.disposed)
+        self.assertIsNone(out)
+
+    def test_fetch_latest_published_run_id_none_when_row_has_null_run_id(self) -> None:
+        conn = _FakeConnection(returns=[_FakeMappingsResult([{"run_id": None}])])
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_latest_published_run_id("db")
+        self.assertTrue(engine.disposed)
+        self.assertIsNone(out)
+
+    def test_copy_job_details_from_run(self) -> None:
+        conn = _FakeConnection(returns=[_FakeExecuteResult(rowcount=3), _FakeExecuteResult(rowcount=2)])
+        engine = _FakeEngine(conn)
+        version_ts = datetime(2026, 1, 2, tzinfo=timezone.utc)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.copy_job_details_from_run(
+                "db",
+                source_run_id="source-run",
+                target_run_id="target-run",
+                target_version_ts=version_ts,
+            )
+        self.assertTrue(engine.disposed)
+        self.assertEqual(out, 3)
+        self.assertEqual(len(conn.calls), 2)
+        self.assertEqual(
+            conn.calls[0][1],
+            {
+                "source_run_id": "source-run",
+                "target_run_id": "target-run",
+                "target_version_ts": version_ts,
+            },
+        )
+        self.assertEqual(
+            conn.calls[1][1],
+            {
+                "source_run_id": "source-run",
+                "target_run_id": "target-run",
+            },
+        )
+
+    def test_fetch_existing_job_detail_ids(self) -> None:
+        conn = _FakeConnection(
+            returns=[
+                _FakeMappingsResult(
+                    [
+                        {"company": "google", "external_job_id": "g1"},
+                        {"company": "google", "external_job_id": "g2"},
+                        {"company": "unknown", "external_job_id": "u1"},
+                    ]
+                )
+            ]
+        )
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_existing_job_detail_ids("db", run_id="r1", companies=["google", "meta"])
+        self.assertTrue(engine.disposed)
+        self.assertEqual(out, {"google": {"g1", "g2"}, "meta": set()})
+        self.assertEqual(conn.calls[0][1], {"run_id": "r1"})
+
+    def test_fetch_existing_job_detail_ids_empty_companies_short_circuits(self) -> None:
+        with patch.object(self.mod, "_db_engine") as engine_mock:
+            out = self.mod.fetch_existing_job_detail_ids("db", run_id="r1", companies=[])
+        engine_mock.assert_not_called()
+        self.assertEqual(out, {})
 
     def test_update_publish_run_status(self) -> None:
         conn = _FakeConnection()
