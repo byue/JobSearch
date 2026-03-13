@@ -313,6 +313,11 @@ class HttpRequestsTest(unittest.TestCase):
         )
         self.assertTrue(http._is_connection_error(tunnel_failed_error))
 
+        proxy_connect_aborted_error = requests.exceptions.RequestException(
+            "Failed to perform, curl: (56) Proxy CONNECT aborted. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+        )
+        self.assertTrue(http._is_connection_error(proxy_connect_aborted_error))
+
         unrelated_error = requests.exceptions.RequestException("some other request failure")
         self.assertFalse(http._is_connection_error(unrelated_error))
 
@@ -322,6 +327,9 @@ class HttpRequestsTest(unittest.TestCase):
 
         tunnel_error = requests.exceptions.RequestException("CONNECT tunnel failed, response 502")
         self.assertTrue(http._should_block_proxy(tunnel_error))
+
+        proxy_connect_aborted_error = requests.exceptions.RequestException("curl: (56) Proxy CONNECT aborted")
+        self.assertTrue(http._should_block_proxy(proxy_connect_aborted_error))
 
         curl56_error = requests.exceptions.RequestException("curl: (56) recv failure")
         self.assertFalse(http._should_block_proxy(curl56_error))
@@ -364,6 +372,30 @@ class HttpRequestsTest(unittest.TestCase):
                     proxy_management_client=proxy_client,
                 )
         self.assertEqual(br.call_count, 5)
+        proxy_client.complete_requests_proxy.assert_called_with(
+            resource="http://1.2.3.4:80",
+            token="tok",
+            success=False,
+            scope="x",
+        )
+
+    def test_bytes_backoff_blocks_proxy_on_proxy_connect_aborted(self) -> None:
+        policy = RequestPolicy(timeout_seconds=1.0, max_retries=1)
+        proxy_client = Mock()
+        error = requests.exceptions.RequestException(
+            "Failed to perform, curl: (56) Proxy CONNECT aborted. See https://curl.se/libcurl/c/libcurl-errors.html first for more details."
+        )
+        with patch(
+            "scrapers.airflow.clients.common.http_requests._proxy_management_result",
+            return_value=({"http": "http://1.2.3.4:80"}, "http://1.2.3.4:80", "tok"),
+        ), patch("scrapers.airflow.clients.common.http_requests.browser_request", side_effect=error):
+            with self.assertRaises(requests.exceptions.RequestException):
+                http.request_bytes_with_backoff(
+                    url="https://x",
+                    headers={},
+                    request_policy=policy,
+                    proxy_management_client=proxy_client,
+                )
         proxy_client.complete_requests_proxy.assert_called_with(
             resource="http://1.2.3.4:80",
             token="tok",
