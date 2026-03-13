@@ -40,6 +40,8 @@ def _is_connection_error(error: Exception) -> bool:
             return True
         if "connect tunnel failed" in message:
             return True
+        if "proxy connect aborted" in message:
+            return True
         current = current.__cause__ if current.__cause__ is not None else current.__context__
     return False
 
