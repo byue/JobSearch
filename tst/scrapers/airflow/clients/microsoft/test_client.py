@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.microsoft.client import MicrosoftJobsClient
 
 

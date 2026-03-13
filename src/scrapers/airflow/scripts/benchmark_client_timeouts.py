@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from scrapers.airflow.clients.client_factory import build_client
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
 from scrapers.proxy.proxy_management_client import ProxyManagementClient

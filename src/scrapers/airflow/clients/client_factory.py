@@ -11,7 +11,7 @@ from scrapers.airflow.clients.google import GoogleJobsClient
 from scrapers.airflow.clients.meta import MetaJobsClient
 from scrapers.airflow.clients.microsoft import MicrosoftJobsClient
 from scrapers.airflow.clients.netflix import NetflixJobsClient
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 

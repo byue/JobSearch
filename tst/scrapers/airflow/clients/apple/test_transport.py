@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from scrapers.airflow.clients.apple.transport import AppleTransport
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 
 
 class AppleTransportTest(unittest.TestCase):

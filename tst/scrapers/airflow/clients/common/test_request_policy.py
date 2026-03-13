@@ -1,6 +1,6 @@
 import unittest
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 
 
 class RequestPolicyTest(unittest.TestCase):

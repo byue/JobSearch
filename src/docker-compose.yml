@@ -254,6 +254,17 @@ services:
     ports:
       - "8000:8000"
 
+  features:
+    build:
+      context: ..
+      dockerfile: src/features/Dockerfile
+    environment:
+      JOBSEARCH_FEATURES_TECHNICAL_PATH: /opt/jobsearch/src/features/data/technical_skills.csv
+      JOBSEARCH_FEATURES_KEYWORD_PATH: /opt/jobsearch/src/features/data/tech_keywords.csv
+      JOBSEARCH_FEATURES_SPACY_MODEL: en_core_web_sm
+    ports:
+      - "8010:8010"
+
   frontend:
     build:
       context: ..

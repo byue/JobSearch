@@ -26,7 +26,7 @@ from scrapers.airflow.dags.job_scrapers_db import (
     upsert_publish_run_in_progress,
 )
 from scrapers.airflow.clients.client_factory import build_client
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
 from scrapers.common.env import require_env, require_env_bool, require_env_float, require_env_int

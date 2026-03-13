@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from scrapers.airflow.clients.amazon.client import AmazonJobsClient
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 
 
 class AmazonClientTest(unittest.TestCase):

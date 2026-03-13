@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from scrapers.airflow.clients.common.request_policy import RequestPolicy
+from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.google.transport import GoogleTransport
 
 
