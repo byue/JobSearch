@@ -11,7 +11,6 @@ import requests
 from scrapers.airflow.clients.amazon.parser import parse_job_details, parse_job_metadata, to_int, to_optional_str
 from scrapers.airflow.clients.amazon.transport import AmazonTransport
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
 
@@ -151,9 +150,10 @@ class AmazonJobsClient(JobsClient):
                 break
 
         if target_payload is None:
-            raise RetryableUpstreamError(
-                "Unexpected Amazon API payload for detail.jobs: "
-                f"no matching job id '{normalized_job_id}' in successful response url={detail_query_url}"
+            return AmazonJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'amazon' url={detail_query_url}",
+                job=None,
             )
 
         return AmazonJobDetailsResponseSchema(

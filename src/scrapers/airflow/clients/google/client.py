@@ -98,8 +98,10 @@ class GoogleJobsClient(JobsClient):
             raise
         row = parser.extract_row_from_ds0(html_payload)
         if row is None:
-            raise ValueError(
-                f"Unexpected Google payload for direct job page: unable to find structured job row for id '{target_id}'"
+            return GoogleJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{target_id}' not found for company 'google' on direct job page url={details_url}",
+                job=None,
             )
         row_job_id = parser.as_str(parser.get(row, 0))
         if row_job_id != target_id:

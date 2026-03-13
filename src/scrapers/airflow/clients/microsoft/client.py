@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import requests
 
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.http_requests import build_get_url
 from scrapers.airflow.clients.microsoft import parser
 from scrapers.airflow.clients.microsoft.transport import MicrosoftTransport, require_mapping
@@ -126,9 +125,10 @@ class MicrosoftJobsClient(JobsClient):
 
         data = require_mapping(payload.get("data"), context="position_details.data")
         if not data:
-            raise RetryableUpstreamError(
-                "Unexpected Microsoft API payload for position_details.data: "
-                f"empty object for requested job id '{position_id}' url={details_url}"
+            return MicrosoftJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{position_id}' not found for company 'microsoft' url={details_url}",
+                job=None,
             )
         return MicrosoftJobDetailsResponseSchema(
             status=status,

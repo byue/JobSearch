@@ -54,8 +54,13 @@ class NetflixClientTest(unittest.TestCase):
         with patch.object(client, "_get_jobs_payload", return_value={"positions": []}), patch.object(
             client, "_extract_description_from_job_page", return_value=None
         ):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
+            details = client.get_job_details(job_id="1")
+            self.assertEqual(details.status, 404)
+            self.assertEqual(
+                details.error,
+                "Job '1' not found for company 'netflix' url=https://explore.jobs.netflix.net/api/apply/v2/jobs?domain=netflix.com&pid=1",
+            )
+            self.assertIsNone(details.job)
 
         with patch.object(
             client,
@@ -139,15 +144,17 @@ class NetflixClientTest(unittest.TestCase):
             with self.assertRaises(requests.exceptions.HTTPError):
                 client.get_job_details(job_id="1")
 
-    def test_get_job_details_missing_page_and_api_description_is_retryable(self) -> None:
+    def test_get_job_details_missing_page_and_api_description_returns_not_found(self) -> None:
         client = self._client()
         with patch.object(client, "_extract_description_from_job_page", return_value=None), patch.object(
             client,
             "_get_jobs_payload",
             return_value={"positions": [{"id": "1", "job_description": None}]},
         ):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
+            details = client.get_job_details(job_id="1")
+            self.assertEqual(details.status, 404)
+            self.assertEqual(details.error, "Job '1' not found for company 'netflix' url=https://explore.jobs.netflix.net/careers/job/1")
+            self.assertIsNone(details.job)
 
     def test_get_jobs_payload(self) -> None:
         client = self._client()

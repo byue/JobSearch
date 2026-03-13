@@ -81,11 +81,16 @@ class MicrosoftClientTest(unittest.TestCase):
             with self.assertRaises(requests.exceptions.HTTPError):
                 client.get_job_details(job_id="missing-1")
 
-    def test_get_job_details_empty_200_payload_is_retryable(self) -> None:
+    def test_get_job_details_empty_200_payload_returns_not_found(self) -> None:
         client = self._client()
         with patch.object(client.transport, "get_json", return_value={"status": 200, "data": {}}):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="missing-1")
+            details = client.get_job_details(job_id="missing-1")
+            self.assertEqual(details.status, 404)
+            self.assertEqual(
+                details.error,
+                "Job 'missing-1' not found for company 'microsoft' url=https://apply.careers.microsoft.com/api/pcsx/position_details?position_id=missing-1&domain=microsoft.com&hl=en",
+            )
+            self.assertIsNone(details.job)
 
 
 if __name__ == "__main__":

@@ -259,13 +259,20 @@ class MetaJobsClient(JobsClient):
                     job=None,
                 )
             raise
+        except RetryableUpstreamError:
+            return MetaJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'meta' url={details_url}",
+                job=None,
+            )
 
         data = _require_mapping(payload.get("data"), context="details.data")
         details_raw = data.get("xcp_requisition_job_description")
         if details_raw is None:
-            raise RetryableUpstreamError(
-                "Unexpected Meta payload for details.data.xcp_requisition_job_description: "
-                f"missing value for requested job id '{normalized_job_id}' url={details_url}"
+            return MetaJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'meta' url={details_url}",
+                job=None,
             )
         if not isinstance(details_raw, Mapping):
             raise ValueError(
