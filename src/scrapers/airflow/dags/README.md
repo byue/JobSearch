@@ -2,7 +2,7 @@
 
 ## Overview
 - **DAG ID**: job_scrapers_local
-- **Schedule**: `0 */4 * * *` (every 4 hours)
+- **Schedule**: `0 */N * * *`, where `N = JOBSEARCH_AIRFLOW_SCHEDULE_HOURS`
 - **Purpose**: scrape jobs/details by company, write versioned rows to DB, verify consistency, and atomically move `jobs_catalog` pointer.
 
 ## Task Graph
@@ -13,15 +13,17 @@ graph TD
   C --> D["jobs_get_first_page - mapped per company"]
   D --> E["jobs_build_page_requests"]
   E --> F["jobs_get_page - mapped per company/page"]
-  F --> G["jobs_build_detail_requests"]
-  G --> H["jobs_get_details - mapped per company/job_id"]
-  G --> I["verify_db_consistency"]
-  H --> I
-  D --> J["update_publish_run"]
-  F --> J
-  H --> J
+  F --> G["jobs_copy_forward_details"]
+  F --> H["jobs_build_detail_requests"]
+  G --> H
+  H --> I["jobs_get_details - mapped per company/job_id"]
+  H --> J["verify_db_consistency"]
   I --> J
-  J --> K["publish_db_pointer"]
+  D --> K["update_publish_run"]
+  F --> K
+  I --> K
+  J --> K
+  K --> L["publish_db_pointer"]
 ```
 
 ## Step Responsibilities
@@ -50,27 +52,34 @@ graph TD
 - Writes/updates `jobs` rows immediately (incremental write).
 - Sets `is_missing_details=FALSE` on successful upsert for seen jobs.
 
-7. `jobs_build_detail_requests`
-- Deduplicates IDs and builds `{company, job_id}` list.
+7. `jobs_copy_forward_details`
+- Reads `publication_pointers(namespace='jobs_catalog')` to find the currently published run, if one exists.
+- Copies matching `job_details` rows from that published run into the current `run_id`.
+- Backfills current-run `jobs.posted_ts` from the copied source rows when available.
 
-8. `jobs_get_details` (mapped by `{company,job_id}`)
+8. `jobs_build_detail_requests`
+- Deduplicates scraped IDs.
+- Excludes jobs that already have current-run `job_details`, including rows copied forward from the currently published run.
+- Builds `{company, job_id}` only for remaining jobs that still need an upstream detail fetch.
+
+9. `jobs_get_details` (mapped by `{company,job_id}`)
 - Fetches details with proxy retry wrapper.
 - On `404`: marks `jobs.is_missing_details=TRUE` and treats mapped item as handled.
 - On success: upserts `job_details`; backfills `jobs.posted_ts` if detail has it.
 
-9. `verify_db_consistency`
+10. `verify_db_consistency`
 - Validates per company:
   - `jobs_count == expected_scraped_ids - missing_details_count`
   - `job_details_count == jobs_count` (excluding `is_missing_details=TRUE` jobs)
   - all included `job_details.job_description` are non-empty
 - Fails run on any violation.
 
-10. `update_publish_run`
+11. `update_publish_run`
 - Aggregates task-level mapped errors from first-page/page/detail outputs.
 - Updates `publish_runs.status` and `db_ready`.
 - Raises failure if any scrape errors exist.
 
-11. `publish_db_pointer`
+12. `publish_db_pointer`
 - Only when run status is `succeeded`.
 - Upserts `publication_pointers(namespace='jobs_catalog')` to this `run_id`.
 - Sets `publish_runs.db_published_at`.
@@ -80,6 +89,7 @@ graph TD
 - If `JOBSEARCH_AIRFLOW_FAIL_ON_COMPANY_ERROR=true`, mapped task errors bubble immediately.
 - Otherwise mapped tasks return `success=false`; `update_publish_run` later fails whole DAG run.
 - True 404 detail misses do **not** fail the run by themselves; they are represented by `jobs.is_missing_details=TRUE` and excluded from detail parity checks.
+- Detail requests are skipped only after a current-run `job_details` row already exists, either from copy-forward or a fresh fetch.
 
 ## Main Tables Touched
 - `publish_runs`
