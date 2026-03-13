@@ -46,8 +46,13 @@ class GoogleClientTest(unittest.TestCase):
                 client.get_job_details(job_id="id1")
 
         with patch.object(client.transport, "get_html", return_value="no ds0"):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="id1")
+            missing = client.get_job_details(job_id="id1")
+            self.assertEqual(missing.status, 404)
+            self.assertEqual(
+                missing.error,
+                "Job 'id1' not found for company 'google' on direct job page url=https://www.google.com/about/careers/applications/jobs/results/id1-job",
+            )
+            self.assertIsNone(missing.job)
 
         http_404 = requests.exceptions.HTTPError("not found")
         http_404.response = requests.Response()

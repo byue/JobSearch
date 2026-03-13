@@ -47,8 +47,13 @@ class AmazonClientTest(unittest.TestCase):
     def test_get_job_details_not_found(self) -> None:
         client = self._client()
         with patch.object(client.transport, "get_json", return_value={"jobs": []}):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
+            details = client.get_job_details(job_id="1")
+            self.assertEqual(details.status, 404)
+            self.assertEqual(
+                details.error,
+                "Job '1' not found for company 'amazon' url=https://www.amazon.jobs/en/search.json?job_id_icims%5B%5D=1&offset=0&result_limit=1&sort=relevant",
+            )
+            self.assertIsNone(details.job)
         with patch.object(client.transport, "get_json", return_value={"jobs": "bad"}):
             with self.assertRaises(ValueError):
                 client.get_job_details(job_id="1")

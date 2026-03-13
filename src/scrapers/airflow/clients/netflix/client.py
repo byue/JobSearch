@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 import requests
 
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff, request_text_with_backoff
@@ -228,18 +227,20 @@ class NetflixJobsClient(JobsClient):
                 break
 
         if target_payload is None:
-            raise RetryableUpstreamError(
-                "Unexpected Netflix API payload for detail.positions: "
-                f"no matching job id '{normalized_job_id}' in successful response url={detail_query_url}"
+            return NetflixJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'netflix' url={detail_query_url}",
+                job=None,
             )
 
         details_url = self._build_details_url(target_payload)
 
         api_job_description = self._extract_job_description(target_payload.get("job_description"))
         if not api_job_description:
-            raise RetryableUpstreamError(
-                "Unexpected Netflix detail payload: missing job description from page and API "
-                f"for job id '{normalized_job_id}' url={details_url}"
+            return NetflixJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'netflix' url={details_url}",
+                job=None,
             )
 
         return NetflixJobDetailsResponseSchema(status=200, error=None, job=self._build_job_details_from_description(api_job_description))

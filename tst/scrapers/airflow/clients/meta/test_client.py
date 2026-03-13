@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.request_policy import RequestPolicy
 from scrapers.airflow.clients.meta.client import MetaJobsClient, _dedupe, _require_mapping, _to_int, _to_optional_str
 from web.backend.schemas import JobDetailsSchema, PayDetails, PayRange
@@ -47,8 +48,10 @@ class MetaClientTest(unittest.TestCase):
             client.get_jobs(page=0)
 
         with patch.object(client, "_run_graphql_query", return_value={"data": {"xcp_requisition_job_description": None}}):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
+            detail = client.get_job_details(job_id="1")
+            self.assertEqual(detail.status, 404)
+            self.assertEqual(detail.error, "Job '1' not found for company 'meta' url=https://www.metacareers.com/jobs/1/")
+            self.assertIsNone(detail.job)
         http_404 = requests.exceptions.HTTPError("not found")
         http_404.response = requests.Response()
         http_404.response.status_code = 404
@@ -81,6 +84,18 @@ class MetaClientTest(unittest.TestCase):
             self.assertEqual(detail.status, 200)
             self.assertIsNotNone(detail.job)
             self.assertIsNone(detail.job.postedTs)
+
+    def test_get_job_details_retryable_upstream_error_returns_not_found(self) -> None:
+        client = self._client()
+        with patch.object(
+            client,
+            "_run_graphql_query",
+            side_effect=RetryableUpstreamError("bootstrap failed"),
+        ):
+            detail = client.get_job_details(job_id="1")
+            self.assertEqual(detail.status, 404)
+            self.assertEqual(detail.error, "Job '1' not found for company 'meta' url=https://www.metacareers.com/jobs/1/")
+            self.assertIsNone(detail.job)
 
     def test_get_job_details_uses_job_page_posted_ts_as_source_of_truth(self) -> None:
         client = self._client()
