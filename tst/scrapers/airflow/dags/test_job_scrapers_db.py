@@ -158,7 +158,9 @@ class JobScrapersDbTest(unittest.TestCase):
         with patch.object(self.mod, "_db_engine", return_value=engine):
             self.mod.upsert_jobs("db", rows=rows)
         self.assertTrue(engine.disposed)
-        self.assertEqual(conn.calls[0][1], rows)
+        self.assertEqual(len(conn.calls[0][1]), 1)
+        self.assertEqual(conn.calls[0][1][0]["external_job_id"], "1")
+        self.assertEqual(conn.calls[0][1][0]["skills"], "[]")
 
     def test_mark_missing_details(self) -> None:
         conn = _FakeConnection()
@@ -320,6 +322,46 @@ class JobScrapersDbTest(unittest.TestCase):
             out = self.mod.fetch_existing_job_detail_ids("db", run_id="r1", companies=[])
         engine_mock.assert_not_called()
         self.assertEqual(out, {})
+
+    def test_fetch_job_skill_requests(self) -> None:
+        conn = _FakeConnection(
+            returns=[
+                _FakeMappingsResult(
+                    [
+                        {"company": "google", "external_job_id": "g1", "job_description_path": "job-details/r1/google/g1.txt"},
+                        {"company": "unknown", "external_job_id": "u1", "job_description_path": "job-details/r1/unknown/u1.txt"},
+                    ]
+                )
+            ]
+        )
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_job_skill_requests("db", run_id="r1", companies=["google", "meta"])
+        self.assertTrue(engine.disposed)
+        self.assertEqual(out, [{"company": "google", "job_id": "g1", "job_description_path": "job-details/r1/google/g1.txt"}])
+
+    def test_fetch_job_skill_requests_empty_companies(self) -> None:
+        with patch.object(self.mod, "_db_engine") as engine_mock:
+            out = self.mod.fetch_job_skill_requests("db", run_id="r1", companies=[])
+        engine_mock.assert_not_called()
+        self.assertEqual(out, [])
+
+    def test_update_job_skills(self) -> None:
+        conn = _FakeConnection()
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            self.mod.update_job_skills(
+                "db",
+                run_id="r1",
+                company="google",
+                external_job_id="j1",
+                skills=["Python", " SQL ", ""],
+            )
+        self.assertTrue(engine.disposed)
+        self.assertEqual(conn.calls[0][1]["run_id"], "r1")
+        self.assertEqual(conn.calls[0][1]["company"], "google")
+        self.assertEqual(conn.calls[0][1]["external_job_id"], "j1")
+        self.assertEqual(conn.calls[0][1]["skills"], '["Python", "SQL"]')
 
     def test_update_publish_run_status(self) -> None:
         conn = _FakeConnection()

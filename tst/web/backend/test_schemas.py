@@ -67,8 +67,15 @@ class SchemasTest(unittest.TestCase):
         companies_response = GetCompaniesResponse(status=200, companies=["amazon", "apple"])
         self.assertEqual(companies_response.companies[0], "amazon")
 
-        details_response = GetJobDetailsResponse(status=200, jobDescription="x", postedTs=123, detailsUrl="https://details")
+        details_response = GetJobDetailsResponse(
+            status=200,
+            jobDescription="x",
+            skills=["Python"],
+            postedTs=123,
+            detailsUrl="https://details",
+        )
         self.assertEqual(details_response.jobDescription, "x")
+        self.assertEqual(details_response.skills, ["Python"])
         self.assertEqual(details_response.postedTs, 123)
         self.assertEqual(details_response.detailsUrl, "https://details")
 

@@ -288,6 +288,7 @@ export default function App() {
 
       const normalizedDetails = {
         jobDescription: payload.jobDescription,
+        skills: Array.isArray(payload?.skills) ? payload.skills.filter((item) => typeof item === "string") : [],
         detailsUrl: typeof payload?.detailsUrl === "string" ? payload.detailsUrl : ""
       };
       detailsCacheRef.current.set(cacheKey, normalizedDetails);
@@ -540,6 +541,19 @@ export default function App() {
                         </li>
                       ))}
                     </ul>
+                  </section>
+                )}
+
+                {Array.isArray(jobDetails?.skills) && jobDetails.skills.length > 0 && (
+                  <section className="details-section">
+                    <h4>Skills</h4>
+                    <div className="skills-chip-list">
+                      {jobDetails.skills.map((skill) => (
+                        <span key={skill} className="skill-chip">
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
                   </section>
                 )}
 

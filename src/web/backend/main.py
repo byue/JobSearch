@@ -110,6 +110,19 @@ def _load_job_description(path: str | None) -> str | None:
     return get_job_description(key=normalized)
 
 
+def _normalize_skills(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        normalized = item.strip()
+        if normalized:
+            out.append(normalized)
+    return out
+
+
 def _validate_company_in_run(run_id: str, company: str) -> str:
     normalized = company.strip().lower()
     if not normalized:
@@ -287,6 +300,7 @@ def get_job_details(payload: GetJobDetailsRequest, request: Request) -> GetJobDe
               j.title,
               j.details_url,
               j.apply_url,
+              j.skills,
               j.posted_ts,
               d.job_description_path
             FROM jobs j
@@ -318,6 +332,7 @@ def get_job_details(payload: GetJobDetailsRequest, request: Request) -> GetJobDe
         status=200,
         error=None,
         jobDescription=_load_job_description(row["job_description_path"]),
+        skills=_normalize_skills(row["skills"]),
         postedTs=_epoch_seconds(row["posted_ts"]),
         detailsUrl=row["details_url"],
     )

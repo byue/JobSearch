@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 import unittest
@@ -109,21 +110,23 @@ class WebBackendIntegrationTest(unittest.TestCase):
         posted_ts: datetime | None,
         details_url: str | None = None,
         apply_url: str | None = None,
+        skills: list[str] | None = None,
         is_missing_details: bool = False,
     ) -> None:
         self._exec(
             """
             INSERT INTO jobs (
               run_id, version_ts, company, external_job_id, title,
-              details_url, apply_url, city, state, country, posted_ts, is_missing_details, updated_at
+              details_url, apply_url, city, state, country, skills, posted_ts, is_missing_details, updated_at
             ) VALUES (
               %s, now(), %s, %s, %s,
-              %s, %s, 'Seattle', 'WA', 'US', %s, %s, now()
+              %s, %s, 'Seattle', 'WA', 'US', %s::jsonb, %s, %s, now()
             )
             ON CONFLICT (run_id, company, external_job_id) DO UPDATE
             SET title = EXCLUDED.title,
                 details_url = EXCLUDED.details_url,
                 apply_url = EXCLUDED.apply_url,
+                skills = EXCLUDED.skills,
                 posted_ts = EXCLUDED.posted_ts,
                 is_missing_details = EXCLUDED.is_missing_details,
                 updated_at = now()
@@ -135,6 +138,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
                 title,
                 details_url,
                 apply_url,
+                json.dumps(skills or []),
                 posted_ts,
                 is_missing_details,
             ),
@@ -287,6 +291,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertEqual(ok.status_code, 200)
         ok_body = ok.json()
         self.assertEqual(ok_body["jobDescription"], "Great role")
+        self.assertEqual(ok_body["skills"], [])
         self.assertEqual(ok_body["detailsUrl"], "https://www.amazon.jobs/en/jobs/detail_ok")
 
         missing = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "detail_missing"})
@@ -368,6 +373,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
             title="Contract Role",
             posted_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
             details_url="https://www.amazon.jobs/en/jobs/contract_1",
+            skills=["Python", "SQL"],
         )
         self._insert_job_details(run_id, "amazon", "contract_1", job_description="Contract details")
         self._set_pointer(run_id)
@@ -403,8 +409,9 @@ class WebBackendIntegrationTest(unittest.TestCase):
         details = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "contract_1"})
         self.assertEqual(details.status_code, 200)
         details_body = details.json()
-        self.assertEqual(set(details_body.keys()), {"status", "error", "jobDescription", "postedTs", "detailsUrl"})
+        self.assertEqual(set(details_body.keys()), {"status", "error", "jobDescription", "skills", "postedTs", "detailsUrl"})
         self.assertIsInstance(details_body["jobDescription"], str)
+        self.assertEqual(details_body["skills"], ["Python", "SQL"])
         self.assertEqual(details_body["postedTs"], 1767225600)
         self.assertEqual(details_body["detailsUrl"], "https://www.amazon.jobs/en/jobs/contract_1")
 

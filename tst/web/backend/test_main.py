@@ -107,6 +107,11 @@ class BackendMainTest(unittest.TestCase):
             self.assertEqual(m._load_job_description("  job-details/r1/amazon/j1.txt  "), "desc")
         get_job_description.assert_called_once_with(key="job-details/r1/amazon/j1.txt")
 
+    def test_normalize_skills(self) -> None:
+        m = self.module
+        self.assertEqual(m._normalize_skills(None), [])
+        self.assertEqual(m._normalize_skills([" Python ", 7, "", "SQL "]), ["Python", "SQL"])
+
     def test_db_conn_uses_psycopg_connect(self) -> None:
         m = self.module
         with patch.object(m.psycopg, "connect", return_value=Mock()) as connect_mock:
@@ -278,6 +283,7 @@ class BackendMainTest(unittest.TestCase):
                         "title": "Role",
                         "details_url": "https://www.amazon.jobs/en/jobs/job-1",
                         "apply_url": "https://www.amazon.jobs/applicant/jobs/job-1/apply",
+                        "skills": ["Python", "SQL"],
                         "posted_ts": m.datetime(2026, 1, 1, tzinfo=m.timezone.utc),
                         "job_description_path": "job-details/run-1/amazon/job-1.txt",
                     }
@@ -294,6 +300,7 @@ class BackendMainTest(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.jobDescription, "desc")
+        self.assertEqual(response.skills, ["Python", "SQL"])
         self.assertEqual(response.detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
 
     def test_get_job_details_success_without_optional_fields(self) -> None:
@@ -309,6 +316,7 @@ class BackendMainTest(unittest.TestCase):
                         "title": "Role Two",
                         "details_url": "https://www.amazon.jobs/en/jobs/job-2",
                         "apply_url": "https://www.amazon.jobs/applicant/jobs/job-2/apply",
+                        "skills": None,
                         "posted_ts": m.datetime(2026, 1, 2, tzinfo=m.timezone.utc),
                         "job_description_path": "job-details/run-1/amazon/job-2.txt",
                     }
@@ -325,6 +333,7 @@ class BackendMainTest(unittest.TestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.jobDescription, "desc2")
+        self.assertEqual(response.skills, [])
         self.assertEqual(response.detailsUrl, "https://www.amazon.jobs/en/jobs/job-2")
 
     def test_get_job_details_not_found_and_missing_details(self) -> None:
@@ -349,6 +358,7 @@ class BackendMainTest(unittest.TestCase):
                     _FakeResult(
                         one={
                             "is_missing_details": True,
+                            "skills": None,
                             "job_description_path": None,
                         }
                     )

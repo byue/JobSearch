@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -113,6 +114,13 @@ def upsert_companies(db_url: str, *, rows: list[dict[str, Any]]) -> None:
 def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
+    prepared_rows: list[dict[str, Any]] = []
+    for row in rows:
+        prepared = dict(row)
+        raw_skills = prepared.get("skills")
+        skills = raw_skills if isinstance(raw_skills, list) else []
+        prepared["skills"] = json.dumps([str(skill).strip() for skill in skills if str(skill).strip()])
+        prepared_rows.append(prepared)
     engine = _db_engine(db_url)
     try:
         with engine.begin() as conn:
@@ -130,6 +138,7 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         city,
                         state,
                         country,
+                        skills,
                         posted_ts,
                         is_missing_details,
                         updated_at
@@ -145,6 +154,7 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         :city,
                         :state,
                         :country,
+                        CAST(:skills AS JSONB),
                         :posted_ts,
                         FALSE,
                         now()
@@ -157,12 +167,16 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         city = EXCLUDED.city,
                         state = EXCLUDED.state,
                         country = EXCLUDED.country,
+                        skills = CASE
+                            WHEN EXCLUDED.skills = '[]'::jsonb THEN jobs.skills
+                            ELSE EXCLUDED.skills
+                        END,
                         posted_ts = EXCLUDED.posted_ts,
                         is_missing_details = FALSE,
                         updated_at = now()
                     """
                 ),
-                rows,
+                prepared_rows,
             )
     finally:
         engine.dispose()
@@ -255,6 +269,92 @@ def upsert_job_details(
                         "posted_ts": posted_ts,
                     },
                 )
+    finally:
+        engine.dispose()
+
+
+def fetch_job_skill_requests(
+    db_url: str,
+    *,
+    run_id: str,
+    companies: list[str],
+) -> list[dict[str, str]]:
+    requests_out: list[dict[str, str]] = []
+    if not companies:
+        return requests_out
+
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                      j.company,
+                      j.external_job_id,
+                      d.job_description_path
+                    FROM jobs j
+                    JOIN job_details d
+                      ON d.run_id = j.run_id
+                     AND d.company = j.company
+                     AND d.external_job_id = j.external_job_id
+                    WHERE j.run_id = :run_id
+                      AND j.is_missing_details = FALSE
+                      AND d.job_description_path IS NOT NULL
+                      AND btrim(d.job_description_path) <> ''
+                      AND COALESCE(jsonb_array_length(j.skills), 0) = 0
+                    ORDER BY j.company, j.external_job_id
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings()
+            for row in rows:
+                company = str(row["company"])
+                if company not in companies:
+                    continue
+                requests_out.append(
+                    {
+                        "company": company,
+                        "job_id": str(row["external_job_id"]),
+                        "job_description_path": str(row["job_description_path"]),
+                    }
+                )
+    finally:
+        engine.dispose()
+
+    return requests_out
+
+
+def update_job_skills(
+    db_url: str,
+    *,
+    run_id: str,
+    company: str,
+    external_job_id: str,
+    skills: list[str],
+) -> None:
+    normalized_skills = [str(skill).strip() for skill in skills if str(skill).strip()]
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE jobs
+                    SET skills = CAST(:skills AS JSONB),
+                        updated_at = now()
+                    WHERE run_id = :run_id
+                      AND company = :company
+                      AND external_job_id = :external_job_id
+                    """
+                ),
+                {
+                    "run_id": run_id,
+                    "company": company,
+                    "external_job_id": external_job_id,
+                    "skills": json.dumps(normalized_skills),
+                },
+            )
     finally:
         engine.dispose()
 

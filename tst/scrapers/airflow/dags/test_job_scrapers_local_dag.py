@@ -225,6 +225,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 "JOBSEARCH_AIRFLOW_PROXY_MIN_AVAILABLE_PER_SCOPE": "1",
                 "JOBSEARCH_AIRFLOW_PROXY_SENSOR_SOFT_FAIL": "false",
                 "JOBSEARCH_DB_URL": "postgresql://db",
+                "JOBSEARCH_FEATURES_API_URL": "http://features:8010",
             }
         )
         _TASK_REGISTRY.clear()
@@ -478,6 +479,64 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         with patch.object(self.mod, "build_client", return_value=client), patch.object(self.mod, "ProxyManagementClient"):
             with self.assertRaises(ValueError):
                 fn(run_info, "amazon", "j1")
+
+    def test_task_build_skill_requests(self) -> None:
+        fn = self.tasks["jobs_build_skill_requests"].fn
+        with patch.object(
+            self.mod,
+            "fetch_job_skill_requests",
+            return_value=[{"company": "amazon", "job_id": "j1", "job_description_path": "job-details/r1/amazon/j1.txt"}],
+        ) as fetch_job_skill_requests:
+            out = fn({"run_id": "r1"})
+        fetch_job_skill_requests.assert_called_once_with(
+            "postgresql://db",
+            run_id="r1",
+            companies=["amazon", "google"],
+        )
+        self.assertEqual(out, [{"company": "amazon", "job_id": "j1", "job_description_path": "job-details/r1/amazon/j1.txt"}])
+
+    def test_task_extract_job_skills(self) -> None:
+        fn = self.tasks["jobs_extract_skills"].fn
+        fake_features_client = SimpleNamespace(get_job_skills=lambda text: {"skills": ["Python", "SQL"]})
+        with patch.object(self.mod, "get_job_description", return_value="Need Python and SQL"), patch.object(
+            self.mod, "FeaturesClient", return_value=fake_features_client
+        ), patch.object(self.mod, "update_job_skills") as update_job_skills:
+            out = fn(
+                {"run_id": "r1"},
+                "amazon",
+                "j1",
+                "job-details/r1/amazon/j1.txt",
+            )
+        update_job_skills.assert_called_once_with(
+            "postgresql://db",
+            run_id="r1",
+            company="amazon",
+            external_job_id="j1",
+            skills=["Python", "SQL"],
+        )
+        self.assertTrue(out["success"])
+        self.assertEqual(out["skills_written"], 2)
+
+    def test_task_extract_job_skills_empty_description_writes_empty_skills(self) -> None:
+        fn = self.tasks["jobs_extract_skills"].fn
+        with patch.object(self.mod, "get_job_description", return_value="   "), patch.object(
+            self.mod, "update_job_skills"
+        ) as update_job_skills:
+            out = fn(
+                {"run_id": "r1"},
+                "amazon",
+                "j1",
+                "job-details/r1/amazon/j1.txt",
+            )
+        update_job_skills.assert_called_once_with(
+            "postgresql://db",
+            run_id="r1",
+            company="amazon",
+            external_job_id="j1",
+            skills=[],
+        )
+        self.assertTrue(out["success"])
+        self.assertEqual(out["skills_written"], 0)
 
     def test_task_verify_db_consistency(self) -> None:
         fn = self.tasks["verify_db_consistency"].fn

@@ -540,6 +540,25 @@ body {
   margin-top: 0.24rem;
 }
 
+.skills-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.skill-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.34rem 0.7rem;
+  border-radius: 999px;
+  background: #e8f1eb;
+  border: 1px solid #cadfcf;
+  color: #214334;
+  font-family: "Sora", sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
 .description-block {
   margin: 0;
   white-space: pre-wrap;
