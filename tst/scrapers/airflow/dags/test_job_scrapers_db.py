@@ -388,6 +388,82 @@ class JobScrapersDbTest(unittest.TestCase):
         self.assertFalse(conn.calls[0][1]["db_ready"])
         self.assertEqual(conn.calls[0][1]["db_error_message"], "boom")
 
+    def test_update_publish_run_es_status(self) -> None:
+        conn = _FakeConnection()
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            self.mod.update_publish_run_es_status(
+                "db",
+                run_id="r1",
+                es_ready=True,
+                es_error_message=None,
+            )
+            self.mod.update_publish_run_es_status(
+                "db",
+                run_id="r1",
+                es_ready=False,
+                es_error_message="boom",
+                status="failed",
+            )
+        self.assertTrue(engine.disposed)
+        self.assertEqual(conn.calls[0][1], {"run_id": "r1", "es_ready": True, "es_error_message": None})
+        self.assertEqual(
+            conn.calls[1][1],
+            {"run_id": "r1", "status": "failed", "es_ready": False, "es_error_message": "boom"},
+        )
+
+    def test_fetch_publish_run_readiness(self) -> None:
+        conn = _FakeConnection(returns=[_FakeMappingsResult([{"status": "in_progress", "db_ready": True, "es_ready": False}])])
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_publish_run_readiness("db", run_id="r1")
+        self.assertEqual(out, {"status": "in_progress", "db_ready": True, "es_ready": False})
+
+        conn_missing = _FakeConnection(returns=[_FakeMappingsResult([])])
+        engine_missing = _FakeEngine(conn_missing)
+        with patch.object(self.mod, "_db_engine", return_value=engine_missing):
+            with self.assertRaises(ValueError):
+                self.mod.fetch_publish_run_readiness("db", run_id="missing")
+
+    def test_fetch_search_index_requests(self) -> None:
+        conn = _FakeConnection(
+            returns=[
+                _FakeMappingsResult(
+                    [
+                        {
+                            "run_id": "r1",
+                            "company": "google",
+                            "external_job_id": "g1",
+                            "title": "Role",
+                            "details_url": "https://details",
+                            "apply_url": "https://apply",
+                            "city": "Seattle",
+                            "state": "WA",
+                            "country": "US",
+                            "skills": ["Python"],
+                            "job_description_embedding": [0.1, -0.2],
+                            "posted_ts": datetime(2026, 1, 2, tzinfo=timezone.utc),
+                            "job_description_path": "job-details/r1/google/g1.txt",
+                        }
+                    ]
+                )
+            ]
+        )
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            out = self.mod.fetch_search_index_requests("db", run_id="r1")
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["external_job_id"], "g1")
+
+    def test_mark_publish_run_status_updates(self) -> None:
+        conn = _FakeConnection()
+        engine = _FakeEngine(conn)
+        with patch.object(self.mod, "_db_engine", return_value=engine):
+            self.mod.mark_publish_run_succeeded("db", run_id="r1")
+            self.mod.mark_publish_run_es_published("db", run_id="r1")
+        self.assertEqual(conn.calls[0][1], {"run_id": "r1"})
+        self.assertEqual(conn.calls[1][1], {"run_id": "r1"})
+
     def test_publish_jobs_catalog_pointer(self) -> None:
         conn = _FakeConnection()
         engine = _FakeEngine(conn)

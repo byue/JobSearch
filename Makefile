@@ -30,7 +30,7 @@ PYENV_BIN ?= $(PYENV_ROOT)/bin/pyenv
 PYENV_INSTALL_FLAGS ?= -v -s
 PYENV_MAKE_JOBS ?= $(shell nproc)
 
-.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open airflow-runs airflow-run-tasks airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
+.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open minio-open kibana-open airflow-runs airflow-run-tasks airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
 
 help:
 	@echo "Targets:"
@@ -64,6 +64,8 @@ help:
 	@echo "  make db-failures        - Show failed publish_runs (optional RUN_ID=<id>, LIMIT=<n>)"
 	@echo "  make proxy-state        - Show proxy sizes by scope (or state with RESOURCE + PROXY_SCOPE)"
 	@echo "  make airflow-open       - Open Airflow UI in browser (http://localhost:8080)"
+	@echo "  make minio-open         - Open MinIO admin console in browser (http://localhost:9001)"
+	@echo "  make kibana-open        - Open Kibana admin UI in browser (http://localhost:5601)"
 	@echo "  make airflow-runs       - List recent DAG runs (use DAG_ID=<id>)"
 	@echo "  make airflow-run-tasks  - List recent DAG runs + active task instance counts (optional RUN_ID=<id>)"
 	@echo "  make airflow-run-stop   - Stop DAG run by marking it failed (RUN_ID=<run_id>)"
@@ -337,6 +339,76 @@ airflow-open:
 	fi; \
 	if [ "$$opened" -eq 1 ]; then \
 		echo "Opened Airflow UI: $$URL"; \
+	else \
+		echo "Could not auto-open browser. Open manually: $$URL"; \
+	fi
+
+minio-open:
+	@URL="http://localhost:9001"; \
+	HEALTH_URL="http://localhost:9000/minio/health/live"; \
+	ready=0; \
+	echo "Waiting for MinIO to become ready..."; \
+	for i in $$(seq 1 30); do \
+		if command -v curl >/dev/null 2>&1 && curl -fsS "$$HEALTH_URL" >/dev/null 2>&1; then \
+			ready=1; \
+			break; \
+		fi; \
+		sleep 2; \
+	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "MinIO is not healthy yet: $$HEALTH_URL"; \
+		exit 1; \
+	fi; \
+	opened=0; \
+	if command -v wslview >/dev/null 2>&1; then \
+		wslview "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v powershell.exe >/dev/null 2>&1; then \
+		powershell.exe -NoProfile -Command "Start-Process '$$URL'" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v open >/dev/null 2>&1; then \
+		open "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 1 ]; then \
+		echo "Opened MinIO admin console: $$URL"; \
+	else \
+		echo "Could not auto-open browser. Open manually: $$URL"; \
+	fi
+
+kibana-open:
+	@URL="http://localhost:5601"; \
+	HEALTH_URL="$$URL/api/status"; \
+	ready=0; \
+	echo "Waiting for Kibana to become ready..."; \
+	for i in $$(seq 1 30); do \
+		if command -v curl >/dev/null 2>&1 && curl -fsS "$$HEALTH_URL" >/dev/null 2>&1; then \
+			ready=1; \
+			break; \
+		fi; \
+		sleep 2; \
+	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "Kibana is not healthy yet: $$HEALTH_URL"; \
+		exit 1; \
+	fi; \
+	opened=0; \
+	if command -v wslview >/dev/null 2>&1; then \
+		wslview "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v powershell.exe >/dev/null 2>&1; then \
+		powershell.exe -NoProfile -Command "Start-Process '$$URL'" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 0 ] && command -v open >/dev/null 2>&1; then \
+		open "$$URL" >/dev/null 2>&1 && opened=1; \
+	fi; \
+	if [ "$$opened" -eq 1 ]; then \
+		echo "Opened Kibana admin UI: $$URL"; \
 	else \
 		echo "Could not auto-open browser. Open manually: $$URL"; \
 	fi

@@ -22,7 +22,9 @@ class GetJobsRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    company: str = Field(min_length=1)
+    company: str | None = None
+    query: str | None = None
+    posted_within: str | None = None
     pagination_index: int = Field(default=1, ge=1)
 
 
@@ -32,6 +34,7 @@ class JobMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str | None = None
+    runId: str | None = None
     name: str | None = None
     company: str | None = None
     locations: list[Location] = Field(default_factory=list)
@@ -107,6 +110,7 @@ class GetJobDetailsRequest(BaseModel):
 
     job_id: str = Field(min_length=1)
     company: str = Field(min_length=1)
+    runId: str | None = None
 
 
 class GetJobDetailsResponse(BaseModel):

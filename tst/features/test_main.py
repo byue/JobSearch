@@ -172,6 +172,40 @@ class FeaturesBackendTest(unittest.TestCase):
                 response = client.post("/job_skills", json={"text": ""})
         self.assertEqual(response.status_code, 422)
 
+    def test_get_query_embedding_endpoint(self) -> None:
+        fake_extractor = type(
+            "FakeExtractor",
+            (),
+            {
+                "technical_filepath": "/tmp/technical_skills.csv",
+                "keyword_filepath": "/tmp/tech_keywords.csv",
+                "skills": set(),
+                "extract": lambda self, text: [],
+            },
+        )()
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [[0.1, -0.2]],
+            },
+        )()
+        with patch("features.main._skill_extractor", return_value=fake_extractor), patch(
+            "features.main._embedding_model", return_value=fake_embedding_model
+        ):
+            with TestClient(app) as client:
+                response = client.post("/query_embedding", json={"text": "Need Python"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": 200,
+                "error": None,
+                "embedding": [0.1, -0.2],
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

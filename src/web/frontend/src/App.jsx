@@ -27,6 +27,14 @@ export function toCompanyOption(value) {
   };
 }
 
+function buildCompanyOptions(values) {
+  const options = Array.isArray(values) ? values.map(toCompanyOption).filter(Boolean) : [];
+  if (options.length === 0) {
+    return [];
+  }
+  return [{ value: "__all__", label: "All Companies" }, ...options];
+}
+
 export function chooseSelectedCompany(previous, options) {
   if (previous && options.some((option) => option.value === previous)) {
     return previous;
@@ -36,6 +44,11 @@ export function chooseSelectedCompany(previous, options) {
 
 export function normalizeCompany(value) {
   return String(value ?? "").trim();
+}
+
+export function normalizePostedWithin(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "24h" || normalized === "7d" || normalized === "30d" ? normalized : "";
 }
 
 export function formatPosted(ts) {
@@ -128,8 +141,13 @@ export async function getJson(url) {
 }
 
 export default function App() {
+  const resultsSectionRef = useRef(null);
   const [companyOptions, setCompanyOptions] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState("");
+  const [appliedCompany, setAppliedCompany] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [postedWithin, setPostedWithin] = useState("");
   const [companiesLoading, setCompaniesLoading] = useState(false);
 
   const [positions, setPositions] = useState([]);
@@ -148,6 +166,7 @@ export default function App() {
   const [activePosition, setActivePosition] = useState(null);
   const detailsCacheRef = useRef(new Map());
   const detailsAbortRef = useRef(null);
+  const hasLoadedInitialResultsRef = useRef(false);
 
   const companyLabelByValue = useMemo(
     () => Object.fromEntries(companyOptions.map((option) => [option.value, option.label])),
@@ -187,29 +206,43 @@ export default function App() {
     setCompaniesLoading(true);
     try {
       const payload = await getJson(`${API_BASE_URL}/get_companies`);
-      const options = Array.isArray(payload?.companies)
-        ? payload.companies.map(toCompanyOption).filter(Boolean)
-        : [];
+      const options = buildCompanyOptions(payload?.companies);
       if (options.length === 0) {
         throw new Error("No companies returned by API.");
       }
       setCompanyOptions(options);
-      setSelectedCompany((previous) => chooseSelectedCompany(previous, options));
+      setSelectedCompany((previous) => {
+        const next = chooseSelectedCompany(previous, options);
+        setAppliedCompany(next);
+        return next;
+      });
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Failed to load companies.");
       setCompanyOptions([]);
       setSelectedCompany("");
+      setAppliedCompany("");
       resetSearchResults(true);
     } finally {
       setCompaniesLoading(false);
     }
   }
 
-  async function searchJobs(targetPage, company = selectedCompany) {
+  async function searchJobs(
+    targetPage,
+    company = appliedCompany,
+    query = appliedQuery,
+    timeWindow = postedWithin,
+    options = {}
+  ) {
+    const { scrollToResults = false } = options;
     const normalizedCompany = normalizeCompany(company);
+    const normalizedQuery = String(query).trim();
+    const normalizedPostedWithin = normalizePostedWithin(timeWindow);
 
     const normalizedSearchBody = {
-      company: normalizedCompany,
+      company: normalizedCompany === "__all__" ? null : normalizedCompany,
+      query: normalizedQuery || null,
+      posted_within: normalizedPostedWithin || null,
       pagination_index: targetPage
     };
 
@@ -231,6 +264,13 @@ export default function App() {
           ? payload.pagination_index
           : targetPage
       );
+      if (scrollToResults) {
+        requestAnimationFrame(() => {
+          if (typeof resultsSectionRef.current?.scrollIntoView === "function") {
+            resultsSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Search request failed.");
       resetSearchResults();
@@ -245,7 +285,8 @@ export default function App() {
     }
 
     const cacheKey = `${position.company ?? "company"}:${position.id}`;
-    const cachedDetails = detailsCacheRef.current.get(cacheKey);
+    const effectiveCacheKey = `${position.runId ?? "run"}:${cacheKey}`;
+    const cachedDetails = detailsCacheRef.current.get(effectiveCacheKey);
 
     setActivePosition(position);
     setIsModalOpen(true);
@@ -271,7 +312,8 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           job_id: String(position.id),
-          company: String(position.company ?? "")
+          company: String(position.company ?? ""),
+          runId: typeof position.runId === "string" ? position.runId : null
         }),
         signal: controller.signal
       });
@@ -291,7 +333,7 @@ export default function App() {
         skills: Array.isArray(payload?.skills) ? payload.skills.filter((item) => typeof item === "string") : [],
         detailsUrl: typeof payload?.detailsUrl === "string" ? payload.detailsUrl : ""
       };
-      detailsCacheRef.current.set(cacheKey, normalizedDetails);
+      detailsCacheRef.current.set(effectiveCacheKey, normalizedDetails);
       setJobDetails(normalizedDetails);
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -326,11 +368,15 @@ export default function App() {
     if (!selectedCompany) {
       return;
     }
-    void searchJobs(1, selectedCompany);
+    if (hasLoadedInitialResultsRef.current) {
+      return;
+    }
+    hasLoadedInitialResultsRef.current = true;
+    void searchJobs(1, selectedCompany, appliedQuery, postedWithin);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompany]);
 
-  const activeCompanyLabel = companyLabelByValue[selectedCompany] || toTitleCase(selectedCompany);
+  const activeCompanyLabel = companyLabelByValue[appliedCompany] || toTitleCase(appliedCompany);
   const totalPages =
     typeof totalPagesFromApi === "number"
       ? totalPagesFromApi
@@ -345,6 +391,8 @@ export default function App() {
     companyLabelByValue[activePosition?.company] ||
     toTitleCase(activePosition?.company) ||
     "Company";
+  const canGoPrevious = !isLoading && page > 1;
+  const canGoNext = !isLoading && hasNextPage;
 
   useEffect(() => {
     if (!isModalOpen) {
@@ -359,20 +407,86 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isModalOpen]);
 
+  function submitSearch(event) {
+    event.preventDefault();
+    const nextQuery = String(searchQuery).trim();
+    setAppliedCompany(selectedCompany);
+    setAppliedQuery(nextQuery);
+    void searchJobs(1, selectedCompany, nextQuery, postedWithin, { scrollToResults: true });
+  }
+
   return (
     <div className="page-shell">
-      <div className="orb orb-a" />
-      <div className="orb orb-b" />
-
       <header className="hero">
-        <p className="hero-kicker">Multi-Company Careers Explorer</p>
-        <h1>All Jobs Feed</h1>
-        <p>
-          Browse a paginated feed of Amazon, Apple, Google, Meta, Microsoft, and Netflix jobs, then inspect details.
-        </p>
+        <div className="topbar">
+          <div className="brand-lockup" aria-label="Tier Zero mark">
+            <span className="brand-monogram">T0</span>
+          </div>
+        </div>
+
+        <div className="hero-center">
+          <h1>Tier Zero</h1>
+          <p className="hero-intro">Access the most selective roles at the world’s top companies.</p>
+
+          <form className="search-panel search-panel-centered" onSubmit={submitSearch}>
+            <div className="search-shell search-shell-wide">
+              <label className="search-input-wrap" aria-label="Search">
+                <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Role, skill, or keyword — e.g. Staff Engineer"
+                  disabled={isLoading}
+                />
+              </label>
+              <button className="btn btn-primary search-submit-btn" type="submit" disabled={isLoading}>
+                Search
+              </button>
+            </div>
+
+            <div className="chip-row" role="group" aria-label="Company filter">
+              {companiesLoading && companyOptions.length === 0 && (
+                <button className="chip chip-disabled" type="button" disabled>
+                  Loading
+                </button>
+              )}
+              {!companiesLoading && companyOptions.length === 0 && (
+                <button className="chip chip-disabled" type="button" disabled>
+                  No companies
+                </button>
+              )}
+              {companyOptions.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`chip ${selectedCompany === option.value ? "chip-active" : ""}`}
+                  onClick={() => setSelectedCompany(option.value)}
+                  aria-pressed={selectedCompany === option.value}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="subfilters">
+              <label className="field company-select-field">
+                <span>Posted</span>
+                <select
+                  value={postedWithin}
+                  onChange={(event) => setPostedWithin(event.target.value)}
+                >
+                  <option value="">Any time</option>
+                  <option value="24h">Last 24 hours</option>
+                  <option value="7d">Last 7 days</option>
+                  <option value="30d">Last 30 days</option>
+                </select>
+              </label>
+            </div>
+          </form>
+        </div>
       </header>
 
-      <section className="results-card">
+      <section className="results-card" id="positions" ref={resultsSectionRef}>
         <div className="results-header">
           <div className="results-title">
             <h2>Positions</h2>
@@ -383,83 +497,58 @@ export default function App() {
               {typeof totalPages === "number" ? ` of ${totalPages.toLocaleString("en-US")}` : ""}
             </p>
           </div>
-          <label className="field company-select-field">
-            <span>Company</span>
-            <select
-              value={selectedCompany}
-              onChange={(event) => setSelectedCompany(event.target.value)}
-              disabled={companiesLoading || isLoading || companyOptions.length === 0}
-            >
-              {companiesLoading && companyOptions.length === 0 && (
-                <option value="">Loading companies...</option>
-              )}
-              {!companiesLoading && companyOptions.length === 0 && (
-                <option value="">No companies</option>
-              )}
-              {companyOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
 
         {errorMessage && <div className="alert-error">{errorMessage}</div>}
 
-        <div className="table-wrap">
-          <table className="positions-table">
-            <thead>
-              <tr>
-                <th>Company</th>
-                <th>Name</th>
-                <th>Locations</th>
-                <th>Posted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {!isLoading &&
-                positions.map((position, index) => (
-                  <tr
-                    key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
-                    style={{ "--row-index": index }}
-                    onClick={() => openDetails(position)}
-                    className={position.id ? "row-clickable" : "row-disabled"}
-                  >
-                    <td>{companyLabelByValue[position.company] || toTitleCase(position.company) || "—"}</td>
-                    <td>{position.name || "—"}</td>
-                    <td className="location-cell" title={formatLocations(position.locations, 99)}>
-                      {formatLocations(position.locations)}
-                    </td>
-                    <td>{formatPosted(position.postedTs)}</td>
-                  </tr>
-                ))}
+        <div className="results-list" role="list">
+          {!isLoading &&
+            positions.map((position, index) => (
+              <button
+                key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
+                type="button"
+                role="listitem"
+                style={{ "--row-index": index }}
+                onClick={() => openDetails(position)}
+                className={`result-item ${position.id ? "row-clickable" : "row-disabled"}`}
+                disabled={!position.id}
+              >
+                <div className="result-item-main">
+                  <div className="result-item-topline">
+                    <span className="result-company">
+                      {companyLabelByValue[position.company] || toTitleCase(position.company) || "—"}
+                    </span>
+                    <span className="result-posted">{formatPosted(position.postedTs)}</span>
+                  </div>
+                  <h3 className="result-title">{position.name || "—"}</h3>
+                  <p className="result-location" title={formatLocations(position.locations, 99)}>
+                    {formatLocations(position.locations)}
+                  </p>
+                </div>
+              </button>
+            ))}
 
-              {!isLoading && positions.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="empty-state">
-                    No jobs found on this page.
-                  </td>
-                </tr>
-              )}
+          {!isLoading && positions.length === 0 && (
+            <div className="empty-state" role="status">
+              No jobs found on this page.
+            </div>
+          )}
 
-              {isLoading && (
-                <tr>
-                  <td colSpan={4} className="loading-state">
-                    Loading positions...
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          {isLoading && (
+            <div className="loading-state" role="status">
+              Loading positions...
+            </div>
+          )}
         </div>
 
         <div className="pagination">
           <button
             className="btn btn-ghost"
             type="button"
-            disabled={isLoading || page === 1 || !selectedCompany}
-            onClick={() => void searchJobs(page - 1)}
+            disabled={!canGoPrevious}
+            onClick={() =>
+              void searchJobs(page - 1, appliedCompany, appliedQuery, postedWithin, { scrollToResults: true })
+            }
           >
             Previous
           </button>
@@ -470,8 +559,10 @@ export default function App() {
           <button
             className="btn btn-ghost"
             type="button"
-            disabled={isLoading || !hasNextPage || !selectedCompany}
-            onClick={() => void searchJobs(page + 1)}
+            disabled={!canGoNext}
+            onClick={() =>
+              void searchJobs(page + 1, appliedCompany, appliedQuery, postedWithin, { scrollToResults: true })
+            }
           >
             Next
           </button>

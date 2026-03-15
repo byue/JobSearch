@@ -149,6 +149,13 @@ def _normalize_text(value: Any) -> str | None:
     return normalized.strip() or None
 
 
+def _normalize_inline_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.replace("\xa0", " ").strip()
+    return normalized or None
+
+
 def render_job_description(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -167,20 +174,29 @@ def render_job_description(value: Any) -> str | None:
 
     for child in fragments:
         if isinstance(child, str):
-            rendered = child.strip() or None
+            rendered = _normalize_inline_text(child)
             if rendered:
                 current_blocks.append(rendered)
             continue
         rendered = _render_child_block(child)
         if not rendered:
+            tail = _normalize_inline_text(getattr(child, "tail", None))
+            if tail:
+                current_blocks.append(tail)
             continue
         if _is_section_heading(child):
             if current_heading or current_blocks:
                 sections.append(_join_section(current_heading, current_blocks))
             current_heading = rendered
             current_blocks = []
+            tail = _normalize_inline_text(getattr(child, "tail", None))
+            if tail:
+                current_blocks.append(tail)
             continue
         current_blocks.append(rendered)
+        tail = _normalize_inline_text(getattr(child, "tail", None))
+        if tail:
+            current_blocks.append(tail)
 
     if current_heading or current_blocks:
         sections.append(_join_section(current_heading, current_blocks))
