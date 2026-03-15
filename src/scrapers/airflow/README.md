@@ -24,12 +24,12 @@ This folder contains the local Airflow DAG that scrapes jobs, writes versioned D
 Notes:
 - Jobs are written to `jobs` during page scrape.
 - Matching `job_details` can be copied forward from the currently published run before detail fetches are built.
-- Details are written to `job_details` during detail scrape.
+- Details are uploaded to MinIO during detail scrape and `job_details` stores the object path.
 - True detail `404` marks `jobs.is_missing_details = TRUE` and does not fail that item.
 - `verify_db_consistency` enforces:
   - job counts match expected scraped IDs (excluding `is_missing_details`)
   - `job_details` count matches jobs count
-  - no empty `job_description` for included details
+  - no empty `job_description_path` for included details
 - `publish_db_pointer` updates `publication_pointers(namespace='jobs_catalog')` only for succeeded runs.
 
 ## Proxy Behavior

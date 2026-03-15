@@ -15,16 +15,15 @@ from fastapi.responses import JSONResponse
 from psycopg.rows import dict_row
 
 from scrapers.common.env import require_env
+from scrapers.common.minio import get_job_description
 from web.backend.schemas import (
     GetCompaniesResponse,
     GetJobDetailsRequest,
     GetJobDetailsResponse,
     GetJobsRequest,
     GetJobsResponse,
-    JobDetailsSchema,
     JobMetadata,
     Location,
-    PayDetails,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,6 +99,15 @@ def _epoch_seconds(value: datetime | None) -> int | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return int(value.timestamp())
+
+
+def _load_job_description(path: str | None) -> str | None:
+    if path is None:
+        return None
+    normalized = path.strip()
+    if not normalized:
+        return None
+    return get_job_description(key=normalized)
 
 
 def _validate_company_in_run(run_id: str, company: str) -> str:
@@ -280,11 +288,7 @@ def get_job_details(payload: GetJobDetailsRequest, request: Request) -> GetJobDe
               j.details_url,
               j.apply_url,
               j.posted_ts,
-              d.job_description,
-              d.minimum_qualifications,
-              d.preferred_qualifications,
-              d.responsibilities,
-              d.pay_details
+              d.job_description_path
             FROM jobs j
             LEFT JOIN job_details d
               ON d.run_id = j.run_id
@@ -309,19 +313,11 @@ def get_job_details(payload: GetJobDetailsRequest, request: Request) -> GetJobDe
             detail=f"Job '{payload.job_id}' details are unavailable for company '{company}'",
         )
 
-    job = JobDetailsSchema(
-        id=str(row["external_job_id"]),
-        name=row["title"],
-        company=company,
-        jobDescription=row["job_description"],
+    _log_company_request(endpoint="/get_job_details", company=company, status=200)
+    return GetJobDetailsResponse(
+        status=200,
+        error=None,
+        jobDescription=_load_job_description(row["job_description_path"]),
         postedTs=_epoch_seconds(row["posted_ts"]),
-        minimumQualifications=list(row["minimum_qualifications"] or []),
-        preferredQualifications=list(row["preferred_qualifications"] or []),
-        responsibilities=list(row["responsibilities"] or []),
-        payDetails=PayDetails.model_validate(row["pay_details"]) if row["pay_details"] else None,
-        applyUrl=row["apply_url"],
         detailsUrl=row["details_url"],
     )
-
-    _log_company_request(endpoint="/get_job_details", company=company, status=200)
-    return GetJobDetailsResponse(status=200, error=None, job=job)

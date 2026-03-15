@@ -15,7 +15,7 @@ import requests
 
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
-from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
+from scrapers.airflow.clients.common.html_text import extract_text
 from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import (
     build_get_url,
@@ -256,14 +256,18 @@ class MetaJobsClient(JobsClient):
                 return MetaJobDetailsResponseSchema(
                     status=404,
                     error=f"Job '{normalized_job_id}' not found for company 'meta' url={details_url}",
-                    job=None,
+                    jobDescription=None,
+                    postedTs=None,
+                    detailsUrl=details_url,
                 )
             raise
         except RetryableUpstreamError:
             return MetaJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{normalized_job_id}' not found for company 'meta' url={details_url}",
-                job=None,
+                jobDescription=None,
+                postedTs=None,
+                detailsUrl=details_url,
             )
 
         data = _require_mapping(payload.get("data"), context="details.data")
@@ -272,7 +276,9 @@ class MetaJobsClient(JobsClient):
             return MetaJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{normalized_job_id}' not found for company 'meta' url={details_url}",
-                job=None,
+                jobDescription=None,
+                postedTs=None,
+                detailsUrl=details_url,
             )
         if not isinstance(details_raw, Mapping):
             raise ValueError(
@@ -281,8 +287,8 @@ class MetaJobsClient(JobsClient):
             )
 
         parsed_job = self._parse_job_details(payload=details_raw)
-        page_posted_ts = self._extract_posted_ts_from_job_page(details_url=details_url)
-        parsed_job = parsed_job.model_copy(update={"postedTs": page_posted_ts})
+        page_details = self._extract_job_page_details(details_url=details_url)
+        page_posted_ts = page_details["postedTs"]
         if page_posted_ts is None:
             LOGGER.info(
                 "meta_posted_ts_missing job_id=%s details_top_level_keys=%s",
@@ -293,7 +299,9 @@ class MetaJobsClient(JobsClient):
         return MetaJobDetailsResponseSchema(
             status=200,
             error=None,
-            job=parsed_job,
+            jobDescription=parsed_job.jobDescription,
+            postedTs=page_posted_ts,
+            detailsUrl=details_url,
         )
 
     def _parse_job_metadata(self, payload: Mapping[str, Any]) -> JobMetadata:
@@ -324,23 +332,24 @@ class MetaJobsClient(JobsClient):
 
     def _parse_job_details(self, *, payload: Mapping[str, Any]) -> JobDetailsSchema:
         description_html = self._extract_html_fragment(payload.get("description"))
-        job_description = html.unescape(description_html) if description_html else None
-
+        description = extract_text(description_html)
+        responsibilities = self._extract_detail_items(payload.get("responsibilities"))
         minimum_qualifications = self._extract_detail_items(payload.get("minimum_qualifications"))
         preferred_qualifications = self._extract_detail_items(payload.get("preferred_qualifications"))
-        responsibilities = self._extract_detail_items(payload.get("responsibilities"))
 
-        pay_details_from_comp = self._extract_public_compensation(payload.get("public_compensation"))
-        pay_details_from_description = extract_pay_details_from_description(job_description)
-        pay_details = self._merge_pay_details(pay_details_from_comp, pay_details_from_description)
+        parts = [
+            self._normalize_plain_text(payload.get("title")),
+            self._format_section("Description", description),
+            self._format_section("Responsibilities", self._join_items(responsibilities)),
+            self._format_section("Minimum Qualifications", self._join_items(minimum_qualifications)),
+            self._format_section("Preferred Qualifications", self._join_items(preferred_qualifications)),
+            self._build_about_meta_section(payload),
+        ]
+        job_description = "\n\n".join(part for part in parts if part) or None
 
         return JobDetailsSchema(
             jobDescription=job_description,
             postedTs=None,
-            minimumQualifications=minimum_qualifications,
-            preferredQualifications=preferred_qualifications,
-            responsibilities=responsibilities,
-            payDetails=pay_details,
         )
 
     @classmethod
@@ -384,6 +393,9 @@ class MetaJobsClient(JobsClient):
 
 
     def _extract_posted_ts_from_job_page(self, *, details_url: str) -> int | None:
+        return self._extract_job_page_details(details_url=details_url)["postedTs"]
+
+    def _extract_job_page_details(self, *, details_url: str) -> dict[str, Any]:
         try:
             html_payload = request_text_with_backoff(
                 url=details_url,
@@ -391,7 +403,7 @@ class MetaJobsClient(JobsClient):
                 request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
                 proxy_management_client=self.proxy_management_client,
             )
-            return self._extract_posted_ts_from_html(html_payload)
+            return self._extract_job_page_details_from_html(html_payload)
         except Exception as exc:
             status_code = None
             if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
@@ -401,7 +413,23 @@ class MetaJobsClient(JobsClient):
                 type(exc).__name__,
                 status_code,
             )
-            return None
+            return {"postedTs": None, "jobDescription": None}
+
+    @classmethod
+    def _extract_job_page_details_from_html(cls, html_payload: str) -> dict[str, Any]:
+        job_posting = cls._extract_job_posting_json_ld(html_payload)
+        posted_ts = cls._extract_posted_ts_from_html(html_payload)
+        if not job_posting:
+            return {"postedTs": posted_ts, "jobDescription": None}
+
+        parts = [
+            cls._normalize_plain_text(job_posting.get("title")),
+            cls._format_section("Description", cls._normalize_plain_text(job_posting.get("description"))),
+            cls._format_section("Responsibilities", cls._normalize_htmlish_text(job_posting.get("responsibilities"))),
+            cls._format_section("Qualifications", cls._normalize_htmlish_text(job_posting.get("qualifications"))),
+        ]
+        job_description = "\n\n".join(part for part in parts if part) or None
+        return {"postedTs": posted_ts, "jobDescription": job_description}
 
     @classmethod
     def _extract_posted_ts_from_html(cls, html_payload: str) -> int | None:
@@ -423,6 +451,130 @@ class MetaJobsClient(JobsClient):
         if fallback_match:
             return cls._parse_timestamp_any(fallback_match.group(1))
         return None
+
+    @classmethod
+    def _extract_job_posting_json_ld(cls, html_payload: str) -> Mapping[str, Any] | None:
+        for match in cls._JSON_LD_PATTERN.finditer(html_payload):
+            raw_script = match.group(1).strip()
+            if not raw_script:
+                continue
+            try:
+                parsed_script = json.loads(raw_script)
+            except json.JSONDecodeError:
+                continue
+            job_posting = cls._find_job_posting_object(parsed_script)
+            if job_posting is not None:
+                return job_posting
+        return None
+
+    @classmethod
+    def _find_job_posting_object(cls, value: Any) -> Mapping[str, Any] | None:
+        if isinstance(value, Mapping):
+            object_type = _to_optional_str(value.get("@type"))
+            if object_type and object_type.casefold() == "jobposting":
+                return value
+            for child in value.values():
+                nested = cls._find_job_posting_object(child)
+                if nested is not None:
+                    return nested
+            return None
+        if isinstance(value, list):
+            for item in value:
+                nested = cls._find_job_posting_object(item)
+                if nested is not None:
+                    return nested
+        return None
+
+    @staticmethod
+    def _normalize_plain_text(value: Any) -> str | None:
+        raw_value = _to_optional_str(value)
+        if not raw_value:
+            return None
+        normalized = html.unescape(raw_value).replace("\r\n", "\n").replace("\r", "\n")
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+        return normalized or None
+
+    @classmethod
+    def _normalize_htmlish_text(cls, value: Any) -> str | None:
+        raw_value = cls._normalize_plain_text(value)
+        if not raw_value:
+            return None
+        text = raw_value.replace("\xa0", "\n\n").replace("&nbsp;", "\n\n")
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        lines = [line.strip() for line in text.splitlines()]
+        compact: list[str] = []
+        previous_blank = False
+        for line in lines:
+            if not line:
+                if compact and not previous_blank:
+                    compact.append("")
+                previous_blank = True
+                continue
+            compact.append(line)
+            previous_blank = False
+        rendered = "\n".join(compact).strip()
+        return rendered or None
+
+    @staticmethod
+    def _format_section(title: str, content: str | None) -> str | None:
+        if not content:
+            return None
+        return f"{title}\n{content}"
+
+    @staticmethod
+    def _join_items(items: list[str]) -> str | None:
+        if not items:
+            return None
+        return "\n".join(item for item in items if item) or None
+
+    @classmethod
+    def _build_about_meta_section(cls, payload: Mapping[str, Any]) -> str | None:
+        intro = extract_text(cls._extract_html_fragment(payload.get("boiler_plate_intro")))
+        california = cls._collapse_inline_text(
+            extract_text(cls._extract_html_fragment(payload.get("california_disclaimer")))
+        )
+        compensation_line = cls._build_compensation_line(payload.get("public_compensation"))
+        compensation_note = (
+            "Individual compensation is determined by skills, qualifications, experience, and location. "
+            "Compensation details listed in this posting reflect the base hourly rate, monthly rate, or annual salary only, "
+            "and do not include bonus, equity or sales incentives, if applicable. In addition to base compensation, Meta offers benefits. "
+            "Learn more about benefits at Meta."
+            if compensation_line
+            else None
+        )
+        content = "\n\n".join(
+            part
+            for part in [intro, california, compensation_line, compensation_note]
+            if part
+        )
+        return cls._format_section("About Meta", content or None)
+
+    @classmethod
+    def _build_compensation_line(cls, value: Any) -> str | None:
+        if not isinstance(value, list) or not value:
+            return None
+        item = value[0]
+        if not isinstance(item, Mapping):
+            return None
+        minimum = _to_optional_str(item.get("compensation_amount_minimum"))
+        maximum = _to_optional_str(item.get("compensation_amount_maximum"))
+        if not minimum and not maximum:
+            return None
+        range_text = " to ".join(part for part in [minimum, maximum] if part)
+        suffixes: list[str] = []
+        if item.get("has_bonus") is True:
+            suffixes.append("bonus")
+        if item.get("has_equity") is True:
+            suffixes.append("equity")
+        suffixes.append("benefits")
+        return f"{range_text} + {' + '.join(suffixes)}"
+
+    @staticmethod
+    def _collapse_inline_text(value: str | None) -> str | None:
+        if not value:
+            return None
+        collapsed = " ".join(part.strip() for part in value.splitlines() if part.strip())
+        return collapsed or None
 
     @classmethod
     def _find_key_recursive(cls, value: Any, *, target_key: str) -> Any:

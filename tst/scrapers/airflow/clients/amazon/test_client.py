@@ -29,9 +29,23 @@ class AmazonClientTest(unittest.TestCase):
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
 
-        with patch.object(client.transport, "get_json", return_value={"jobs": [{"id_icims": "1", "description": "x"}]}):
+        with patch.object(
+            client.transport,
+            "get_text",
+            return_value=(
+                "<html><body><h1 class='title'>Role</h1>"
+                "<div id='job-detail-body'><div class='content'>"
+                "<div class='section'><h2>Description</h2><p>Body</p></div>"
+                "<div class='section'><h2>Basic Qualifications</h2><ul><li>Python</li></ul></div>"
+                "</div></div></body></html>"
+            ),
+        ):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
+            self.assertIn("Role", details.jobDescription or "")
+            self.assertIn("\n\nDescription\n", details.jobDescription or "")
+            self.assertIn("\n\nBasic Qualifications\n", details.jobDescription or "")
+            self.assertEqual(details.detailsUrl, "https://www.amazon.jobs/en/jobs/1")
 
     def test_get_jobs_validation(self) -> None:
         client = self._client()
@@ -46,27 +60,25 @@ class AmazonClientTest(unittest.TestCase):
 
     def test_get_job_details_not_found(self) -> None:
         client = self._client()
-        with patch.object(client.transport, "get_json", return_value={"jobs": []}):
+        with patch.object(client.transport, "get_text", return_value=""):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 404)
             self.assertEqual(
                 details.error,
-                "Job '1' not found for company 'amazon' url=https://www.amazon.jobs/en/search.json?job_id_icims%5B%5D=1&offset=0&result_limit=1&sort=relevant",
+                "Job '1' not found for company 'amazon' url=https://www.amazon.jobs/en/jobs/1",
             )
-            self.assertIsNone(details.job)
-        with patch.object(client.transport, "get_json", return_value={"jobs": "bad"}):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
+            self.assertIsNone(details.jobDescription)
+            self.assertEqual(details.detailsUrl, "https://www.amazon.jobs/en/jobs/1")
         http_404 = requests.exceptions.HTTPError("not found")
         http_404.response = requests.Response()
         http_404.response.status_code = 404
-        with patch.object(client.transport, "get_json", side_effect=http_404):
+        with patch.object(client.transport, "get_text", side_effect=http_404):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 404)
         http_500 = requests.exceptions.HTTPError("server error")
         http_500.response = requests.Response()
         http_500.response.status_code = 500
-        with patch.object(client.transport, "get_json", side_effect=http_500):
+        with patch.object(client.transport, "get_text", side_effect=http_500):
             with self.assertRaises(requests.exceptions.HTTPError):
                 client.get_job_details(job_id="1")
 
@@ -83,9 +95,20 @@ class AmazonClientTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.get_job_details(job_id=" ")
 
-        with patch.object(client.transport, "get_json", return_value={"jobs": [1, {"id_icims": "2"}]}):
+        with patch.object(
+            client.transport,
+            "get_text",
+            return_value=(
+                "<html><body><div id='job-detail-body'><div class='content'>"
+                "<div class='section'><p>text body</p></div>"
+                "<div class='section'><h2>Preferred Qualifications</h2><ul><li>Extra</li></ul></div>"
+                "</div></div></body></html>"
+            ),
+        ):
             out = client.get_job_details(job_id="2")
             self.assertEqual(out.status, 200)
+            self.assertEqual(out.jobDescription, "text body\n\nPreferred Qualifications\nExtra")
+            self.assertEqual(out.detailsUrl, "https://www.amazon.jobs/en/jobs/2")
 
 
 if __name__ == "__main__":

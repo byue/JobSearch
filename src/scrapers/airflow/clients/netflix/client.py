@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 import logging
 import re
@@ -13,10 +12,10 @@ from typing import TYPE_CHECKING, Any
 import requests
 
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
+from scrapers.airflow.clients.common.html_text import extract_text
 from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff, request_text_with_backoff
-from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobDetailsSchema, JobMetadata, Location
+from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata, Location
 
 if TYPE_CHECKING:
     from scrapers.proxy.proxy_management_client import ProxyManagementClient
@@ -59,6 +58,69 @@ def _require_mapping(value: Any, *, context: str) -> Mapping[str, Any]:
             f"Unexpected Netflix API payload for {context}: expected object, got {type(value).__name__}"
         )
     return value
+
+
+def _normalize_description_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    raw = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not raw:
+        return None
+
+    lines: list[str] = []
+    previous_blank = False
+    previous_was_list_item = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            if previous_was_list_item:
+                previous_blank = False
+                continue
+            if lines and not previous_blank:
+                lines.append("")
+            previous_blank = True
+            continue
+
+        normalized = stripped
+        is_list_item = False
+        if stripped.startswith(("* ", "- ")):
+            normalized = stripped[2:].strip()
+            is_list_item = True
+        elif stripped.startswith(("*", "-")) and len(stripped) > 1 and stripped[1].isspace():
+            normalized = stripped[1:].strip()
+            is_list_item = True
+
+        lines.append(normalized)
+        previous_blank = False
+        previous_was_list_item = is_list_item
+
+    normalized_text = "\n".join(lines).strip()
+    return normalized_text or None
+
+
+def _extract_job_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    raw = value.strip()
+    if not raw:
+        return None
+
+    if "<" in raw and ">" in raw:
+        extracted = extract_text(raw)
+        return _normalize_description_text(extracted)
+
+    return _normalize_description_text(raw)
+
+
+def _prepend_title(*, title: str | None, body: str | None) -> str | None:
+    normalized_title = _to_optional_str(title)
+    if normalized_title and body:
+        if body.startswith(normalized_title):
+            return body
+        return f"{normalized_title}\n\n{body}"
+    return normalized_title or body
 
 
 class NetflixJobsClient(JobsClient):
@@ -180,7 +242,8 @@ class NetflixJobsClient(JobsClient):
             return NetflixJobDetailsResponseSchema(
                 status=200,
                 error=None,
-                job=self._build_job_details_from_description(page_job_description),
+                jobDescription=page_job_description,
+                detailsUrl=details_url,
             )
 
         detail_query_url = build_get_url(
@@ -206,7 +269,8 @@ class NetflixJobsClient(JobsClient):
                 return NetflixJobDetailsResponseSchema(
                     status=404,
                     error=f"Job '{normalized_job_id}' not found for company 'netflix' url={detail_query_url}",
-                    job=None,
+                    jobDescription=None,
+                    detailsUrl=details_url,
                 )
             raise
 
@@ -230,7 +294,8 @@ class NetflixJobsClient(JobsClient):
             return NetflixJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{normalized_job_id}' not found for company 'netflix' url={detail_query_url}",
-                job=None,
+                jobDescription=None,
+                detailsUrl=detail_query_url,
             )
 
         details_url = self._build_details_url(target_payload)
@@ -240,62 +305,18 @@ class NetflixJobsClient(JobsClient):
             return NetflixJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{normalized_job_id}' not found for company 'netflix' url={details_url}",
-                job=None,
+                jobDescription=None,
+                detailsUrl=details_url,
             )
 
-        return NetflixJobDetailsResponseSchema(status=200, error=None, job=self._build_job_details_from_description(api_job_description))
-
-    def _build_job_details_from_description(self, job_description: str) -> JobDetailsSchema:
-        minimum_html = self._extract_section(
-            job_description,
-            headings=(
-                "required experience and skills",
-                "required qualifications",
-                "minimum qualifications",
-                "qualifications",
-                "what you will need",
-                "you will be successful in this role if you have",
-                "requirements",
+        return NetflixJobDetailsResponseSchema(
+            status=200,
+            error=None,
+            jobDescription=_prepend_title(
+                title=_to_optional_str(target_payload.get("posting_name")) or _to_optional_str(target_payload.get("name")),
+                body=api_job_description,
             ),
-        )
-        preferred_html = self._extract_section(
-            job_description,
-            headings=(
-                "nice to haves",
-                "nice to have",
-                "preferred experience and skills",
-                "preferred qualifications",
-                "bonus",
-                "what would set you apart",
-            ),
-        )
-        responsibilities_html = self._extract_section(
-            job_description,
-            headings=(
-                "the role",
-                "responsibilities",
-                "what you'll do",
-                "what you will do",
-                "in this role",
-            ),
-        )
-
-        minimum_qualifications = _dedupe(self._extract_list_items(minimum_html))
-        preferred_qualifications = _dedupe(self._extract_list_items(preferred_html))
-        responsibilities = _dedupe(self._extract_list_items(responsibilities_html))
-
-        list_blocks = self._extract_html_list_blocks(job_description)
-        if not minimum_qualifications and list_blocks:
-            minimum_qualifications = _dedupe(self._extract_list_items(list_blocks[0]))
-        if not preferred_qualifications and len(list_blocks) > 1:
-            preferred_qualifications = _dedupe(self._extract_list_items(list_blocks[-1]))
-
-        return JobDetailsSchema(
-            jobDescription=job_description,
-            minimumQualifications=minimum_qualifications,
-            preferredQualifications=preferred_qualifications,
-            responsibilities=responsibilities,
-            payDetails=extract_pay_details_from_description(job_description),
+            detailsUrl=details_url,
         )
 
     def _get_jobs_payload(
@@ -397,14 +418,13 @@ class NetflixJobsClient(JobsClient):
     @staticmethod
     def _extract_job_description(value: Any) -> str | None:
         if isinstance(value, str):
-            normalized = value.strip()
-            return normalized or None
+            return _extract_job_text(value)
 
         if isinstance(value, list):
             parts = [item for item in value if isinstance(item, str) and item.strip()]
             if not parts:
                 return None
-            return "\n\n".join(parts)
+            return "\n\n".join(part for part in (_extract_job_text(item) for item in parts) if part)
 
         return None
 
@@ -413,13 +433,16 @@ class NetflixJobsClient(JobsClient):
 
         job_posting = self._extract_job_posting_ld_json(html_payload)
         if isinstance(job_posting, Mapping):
-            description = _to_optional_str(job_posting.get("description"))
+            description = _extract_job_text(job_posting.get("description"))
             if description:
-                return html.unescape(description)
+                return _prepend_title(title=_to_optional_str(job_posting.get("title")), body=description)
 
         meta_description = self._extract_meta_description(html_payload)
         if meta_description:
-            return html.unescape(meta_description)
+            return _extract_job_text(meta_description)
+        extracted = extract_text(html_payload, full_document=True)
+        if extracted:
+            return _normalize_description_text(extracted)
         return None
 
     def _get_job_page_html(self, *, job_id: str, details_url: str) -> str:
@@ -491,90 +514,6 @@ class NetflixJobsClient(JobsClient):
             return None
         return _to_optional_str(match.group(1))
 
-    @classmethod
-    def _extract_section(cls, description: str | None, *, headings: tuple[str, ...]) -> str | None:
-        if not isinstance(description, str) or not description.strip():
-            return None
-
-        for heading in headings:
-            heading_pattern = re.escape(heading.strip())
-            html_heading_match = re.search(
-                rf"(?is)<h[1-6][^>]*>\s*{heading_pattern}:?\s*</h[1-6]>\s*(.*?)(?=<h[1-6][^>]*>|$)",
-                description,
-            )
-            if html_heading_match:
-                section = html_heading_match.group(1).strip()
-                if section:
-                    return section
-
-            strong_heading_match = re.search(
-                rf"(?is)<strong[^>]*>\s*{heading_pattern}:?\s*</strong>\s*(.*?)(?=<strong[^>]*>|<h[1-6][^>]*>|$)",
-                description,
-            )
-            if strong_heading_match:
-                section = strong_heading_match.group(1).strip()
-                if section:
-                    return section
-
-            bold_heading_match = re.search(
-                rf"(?is)<b[^>]*>\s*{heading_pattern}:?\s*</b>\s*(.*?)(?=<b[^>]*>|<strong[^>]*>|<h[1-6][^>]*>|$)",
-                description,
-            )
-            if bold_heading_match:
-                section = bold_heading_match.group(1).strip()
-                if section:
-                    return section
-
-        return None
-
-    @classmethod
-    def _extract_list_items(cls, value: Any) -> list[str]:
-        raw_html = value if isinstance(value, str) else None
-        if not raw_html:
-            return []
-
-        cleaned = raw_html.strip()
-        if not cleaned:
-            return []
-
-        li_matches = re.findall(r"(?is)<li[^>]*>(.*?)</li>", cleaned)
-        candidates = li_matches if li_matches else [cleaned]
-
-        values: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            text = cls._clean_html_fragment(candidate)
-            if not text:
-                continue
-            pieces = re.split(r"(?:\n|•)+", text)
-            for piece in pieces:
-                normalized = piece.strip()
-                if not normalized or normalized in seen:
-                    continue
-                seen.add(normalized)
-                values.append(normalized)
-
-        return values
-
-    @staticmethod
-    def _extract_html_list_blocks(value: str | None) -> list[str]:
-        if not isinstance(value, str) or not value.strip():
-            return []
-        return re.findall(r"(?is)<ul[^>]*>.*?</ul>", value)
-
     @staticmethod
     def _clean_html_fragment(value: str) -> str:
-        normalized = (
-            value.replace("\r\n", "\n")
-            .replace("\r", "\n")
-            .replace("<br/>", "\n")
-            .replace("<br />", "\n")
-            .replace("<br>", "\n")
-            .replace("</p>", "\n")
-            .replace("</li>", "\n")
-        )
-        normalized = re.sub(r"(?is)<[^>]+>", " ", normalized)
-        normalized = html.unescape(normalized)
-        normalized = re.sub(r"[ \t]+", " ", normalized)
-        normalized = re.sub(r"\n{2,}", "\n", normalized)
-        return normalized.strip()
+        return extract_text(value) or ""

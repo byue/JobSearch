@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import html
 import json
 import re
 import urllib.parse
 from typing import Any
 
-from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
+from scrapers.airflow.clients.common.html_text import extract_text
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 _DS1_PATTERN = re.compile(
@@ -76,23 +75,62 @@ def parse_job_metadata(*, row: list[Any], page: int, base_url: str, results_path
 
 
 def parse_job_details(*, row: list[Any]) -> JobDetailsSchema:
-    qualifications_block = get(row, 4)
-    responsibilities_html = extract_html_text(get(row, 3))
-    minimum_html = extract_html_text(get(row, 19)) or extract_qualification_section(
-        qualifications_block, "minimum qualifications"
-    ) or extract_html_text(qualifications_block)
-    preferred_html = extract_qualification_section(
-        qualifications_block, "preferred qualifications"
-    ) or extract_qualification_section(get(row, 10), "preferred qualifications")
-    job_description = extract_html_text(get(row, 10))
+    parts = [
+        as_optional_str(get(row, 1)),
+        _format_section("About the job", extract_text(extract_html_text(get(row, 10)))),
+        _format_qualifications(extract_text(extract_html_text(get(row, 4)))),
+        _format_section("Responsibilities", _strip_list_markers(extract_text(extract_html_text(get(row, 3))))),
+    ]
+    job_description = "\n\n".join(part for part in parts if part) or None
 
     return JobDetailsSchema(
         jobDescription=job_description,
-        minimumQualifications=extract_list_items(minimum_html),
-        preferredQualifications=extract_list_items(preferred_html),
-        responsibilities=extract_list_items(responsibilities_html),
-        payDetails=extract_pay_details_from_description(job_description),
     )
+
+
+def _format_section(title: str, content: str | None) -> str | None:
+    if not content:
+        return None
+    return f"{title}\n{content}"
+
+
+def _format_qualifications(content: str | None) -> str | None:
+    if not content:
+        return None
+
+    normalized = content.strip()
+    if not normalized:
+        return None
+
+    lines = [line.rstrip() for line in normalized.splitlines()]
+    compact = "\n".join(line for line in lines if line.strip())
+
+    preferred_pattern = re.compile(r"(?im)^Preferred qualifications:?\s*$")
+    compact = preferred_pattern.sub("\nPreferred Qualifications", compact, count=1)
+
+    minimum_pattern = re.compile(r"(?im)^Minimum qualifications:?\s*$")
+    if minimum_pattern.search(compact):
+        compact = minimum_pattern.sub("Minimum Qualifications", compact, count=1)
+        return compact
+
+    return f"Minimum Qualifications\n{compact}"
+
+
+def _strip_list_markers(content: str | None) -> str | None:
+    if not content:
+        return None
+
+    cleaned_lines: list[str] = []
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        for prefix in ("- ", "* ", "• "):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix) :]
+                break
+        cleaned_lines.append(stripped)
+
+    normalized = "\n".join(cleaned_lines).strip()
+    return normalized or None
 
 
 def build_public_url(*, job_id: str, name: str | None, page: int, base_url: str, results_path: str) -> str:
@@ -178,69 +216,8 @@ def extract_html_text(value: Any) -> str | None:
     return None
 
 
-def extract_qualification_section(value: Any, heading: str) -> str | None:
-    raw_html = extract_html_text(value)
-    if not raw_html:
-        return None
-
-    heading_pattern = re.escape(heading.strip())
-    match = re.search(
-        rf"(?is)<h[1-6][^>]*>\s*{heading_pattern}:?\s*</h[1-6]>\s*(.*?)(?=<h[1-6][^>]*>|$)",
-        raw_html,
-    )
-    if match:
-        section = match.group(1).strip()
-        return section or None
-
-    match = re.search(rf"(?is)\b{heading_pattern}:?\b\s*(.*?)(?=<h[1-6][^>]*>|$)", raw_html)
-    if not match:
-        return None
-    section = match.group(1).strip()
-    return section or None
-
-
-def extract_list_items(value: Any) -> list[str]:
-    raw_html = extract_html_text(value) if not isinstance(value, str) else value
-    if not isinstance(raw_html, str):
-        return []
-    cleaned = raw_html.strip()
-    if not cleaned:
-        return []
-
-    li_matches = re.findall(r"(?is)<li[^>]*>(.*?)</li>", cleaned)
-    candidates = li_matches if li_matches else [cleaned]
-
-    values: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        text = clean_html_fragment(candidate)
-        if not text:
-            continue
-        pieces = re.split(r"(?:\n|•)+", text)
-        for piece in pieces:
-            normalized = piece.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            values.append(normalized)
-    return values
-
-
 def clean_html_fragment(value: str) -> str:
-    normalized = (
-        value.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
-        .replace("<br>", "\n")
-        .replace("</p>", "\n")
-        .replace("</li>", "\n")
-    )
-    normalized = re.sub(r"(?is)<[^>]+>", " ", normalized)
-    normalized = html.unescape(normalized)
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"\n{2,}", "\n", normalized)
-    return normalized.strip()
+    return extract_text(value) or ""
 
 
 def has_next_page(*, page: int, jobs_count: int, total_results: int | None, page_size: int | None) -> bool:

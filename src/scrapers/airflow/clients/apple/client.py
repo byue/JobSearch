@@ -1,12 +1,10 @@
-"""Apple jobs client using embedded hydration JSON from public pages."""
+"""Apple jobs client using search-page hydration and details JSON."""
 
 from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
-
-import requests
 
 from scrapers.airflow.clients.apple import parser
 from scrapers.airflow.clients.apple.transport import AppleTransport
@@ -21,7 +19,7 @@ AppleJobDetailsResponseSchema = GetJobDetailsResponse
 
 
 class AppleJobsClient(JobsClient):
-    """Client for Apple Careers public search/details pages."""
+    """Client for Apple Careers public search/details endpoints."""
 
     BASE_URL = "https://jobs.apple.com"
     DEFAULT_LOCALE = "en-us"
@@ -99,47 +97,24 @@ class AppleJobsClient(JobsClient):
             raise ValueError("job_id must be a non-empty string")
         encoded_job_id = urllib.parse.quote(normalized_job_id)
         details_url = f"{self.base_url}/{self.locale}/details/{encoded_job_id}"
-
-        try:
-            html_payload = self.transport.get_html(
-                path=f"/{self.locale}/details/{encoded_job_id}",
-                params=[],
-                request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
-            )
-        except requests.exceptions.HTTPError as exc:
-            status_code = exc.response.status_code if exc.response is not None else None
-            if status_code == 404:
-                return AppleJobDetailsResponseSchema(
-                    status=404,
-                    error=f"Job '{normalized_job_id}' not found for company 'apple' url={details_url}",
-                    job=None,
-                )
-            raise
-        payload = parser.extract_hydration_payload(
-            html_payload=html_payload,
-            context=f"details '{normalized_job_id}'",
+        payload = self.transport.get_json(
+            path=f"/api/v1/jobDetails/{encoded_job_id}",
+            params=[],
+            request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
         )
-
-        errors = payload.get("errors")
-        if isinstance(errors, Mapping):
-            job_details_error = errors.get("jobDetails")
-            if isinstance(job_details_error, Mapping) and job_details_error.get("status") == 404:
-                return AppleJobDetailsResponseSchema(
-                    status=404,
-                    error=f"Job '{normalized_job_id}' not found for company 'apple' url={details_url}",
-                    job=None,
-                )
-
-        loader_data = parser.require_mapping(payload.get("loaderData"), context="details.loaderData")
-        details_data = loader_data.get("jobDetails")
-        if not isinstance(details_data, Mapping):
-            raise ValueError(
-                "Unexpected Apple payload for details.loaderData.jobDetails: expected object, "
-                f"got {type(details_data).__name__}"
+        details_payload = parser.require_mapping(payload.get("res"), context="details.res")
+        job_details = parser.parse_job_details(payload=details_payload)
+        if not job_details.jobDescription:
+            return AppleJobDetailsResponseSchema(
+                status=404,
+                error=f"Job '{normalized_job_id}' not found for company 'apple' url={details_url}",
+                jobDescription=None,
+                detailsUrl=details_url,
             )
 
-        jobs_data = parser.require_mapping(
-            details_data.get("jobsData"),
-            context="details.loaderData.jobDetails.jobsData",
+        return AppleJobDetailsResponseSchema(
+            status=200,
+            error=None,
+            jobDescription=job_details.jobDescription,
+            detailsUrl=details_url,
         )
-        return AppleJobDetailsResponseSchema(status=200, error=None, job=parser.parse_job_details(payload=jobs_data))

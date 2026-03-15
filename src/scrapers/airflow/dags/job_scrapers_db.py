@@ -216,11 +216,7 @@ def upsert_job_details(
                         version_ts,
                         company,
                         external_job_id,
-                        job_description,
-                        minimum_qualifications,
-                        preferred_qualifications,
-                        responsibilities,
-                        pay_details,
+                        job_description_path,
                         updated_at
                     )
                     VALUES (
@@ -228,20 +224,12 @@ def upsert_job_details(
                         :version_ts,
                         :company,
                         :external_job_id,
-                        :job_description,
-                        CAST(:minimum_qualifications AS JSONB),
-                        CAST(:preferred_qualifications AS JSONB),
-                        CAST(:responsibilities AS JSONB),
-                        CAST(:pay_details AS JSONB),
+                        :job_description_path,
                         now()
                     )
                     ON CONFLICT (run_id, company, external_job_id) DO UPDATE
                     SET version_ts = EXCLUDED.version_ts,
-                        job_description = EXCLUDED.job_description,
-                        minimum_qualifications = EXCLUDED.minimum_qualifications,
-                        preferred_qualifications = EXCLUDED.preferred_qualifications,
-                        responsibilities = EXCLUDED.responsibilities,
-                        pay_details = EXCLUDED.pay_details,
+                        job_description_path = EXCLUDED.job_description_path,
                         updated_at = now()
                     """
                 ),
@@ -320,11 +308,7 @@ def copy_job_details_from_run(
                         version_ts,
                         company,
                         external_job_id,
-                        job_description,
-                        minimum_qualifications,
-                        preferred_qualifications,
-                        responsibilities,
-                        pay_details,
+                        job_description_path,
                         updated_at
                     )
                     SELECT
@@ -332,11 +316,7 @@ def copy_job_details_from_run(
                         :target_version_ts,
                         source.company,
                         source.external_job_id,
-                        source.job_description,
-                        source.minimum_qualifications,
-                        source.preferred_qualifications,
-                        source.responsibilities,
-                        source.pay_details,
+                        source.job_description_path,
                         now()
                     FROM job_details source
                     JOIN jobs target_jobs
@@ -484,7 +464,7 @@ def fetch_consistency_counts(
                      AND j.external_job_id = d.external_job_id
                     WHERE d.run_id = :run_id
                       AND j.is_missing_details = FALSE
-                      AND (d.job_description IS NULL OR btrim(d.job_description) = '')
+                      AND (d.job_description_path IS NULL OR btrim(d.job_description_path) = '')
                     GROUP BY d.company
                     """
                 ),

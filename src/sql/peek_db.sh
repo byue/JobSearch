@@ -120,11 +120,7 @@ for table in "${TABLES[@]}"; do
       ;;
     job_details)
       run_query "${table}" "SELECT run_id, version_ts, company, external_job_id, \
-CASE WHEN length(COALESCE(job_description,'')) > :trunc_n THEN left(COALESCE(job_description,''), :trunc_n) || ' ...' ELSE COALESCE(job_description,'') END AS job_description, \
-CASE WHEN length(COALESCE(minimum_qualifications::text,'')) > :trunc_n THEN left(COALESCE(minimum_qualifications::text,''), :trunc_n) || ' ...' ELSE COALESCE(minimum_qualifications::text,'') END AS minimum_qualifications, \
-CASE WHEN length(COALESCE(preferred_qualifications::text,'')) > :trunc_n THEN left(COALESCE(preferred_qualifications::text,''), :trunc_n) || ' ...' ELSE COALESCE(preferred_qualifications::text,'') END AS preferred_qualifications, \
-CASE WHEN length(COALESCE(responsibilities::text,'')) > :trunc_n THEN left(COALESCE(responsibilities::text,''), :trunc_n) || ' ...' ELSE COALESCE(responsibilities::text,'') END AS responsibilities, \
-CASE WHEN length(COALESCE(pay_details::text,'')) > :trunc_n THEN left(COALESCE(pay_details::text,''), :trunc_n) || ' ...' ELSE COALESCE(pay_details::text,'') END AS pay_details, \
+CASE WHEN length(COALESCE(job_description_path,'')) > :trunc_n THEN left(COALESCE(job_description_path,''), :trunc_n) || ' ...' ELSE COALESCE(job_description_path,'') END AS job_description_path, \
 updated_at \
 FROM job_details ORDER BY updated_at DESC LIMIT :limit_n;"
       ;;

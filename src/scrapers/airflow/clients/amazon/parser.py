@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
-import html
 import json
-import re
+import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
-from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
+from lxml import html as lxml_html
+
+from scrapers.airflow.clients.common.html_text import extract_text
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 
@@ -71,36 +73,34 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetad
 
 
 def parse_job_details(*, payload: Mapping[str, Any]) -> JobDetailsSchema:
-    job_description = to_optional_str(payload.get("description")) or to_optional_str(
+    raw_job_description = to_optional_str(payload.get("description")) or to_optional_str(
         payload.get("description_short")
     )
-    minimum_qualifications = coerce_detail_list(payload.get("basic_qualifications"))
-    preferred_qualifications = coerce_detail_list(payload.get("preferred_qualifications"))
-
-    responsibilities_section = extract_section(
-        job_description,
-        heading="Key job responsibilities",
-    )
-    responsibilities = coerce_detail_list(responsibilities_section)
+    job_description = extract_text(raw_job_description)
 
     return JobDetailsSchema(
         jobDescription=job_description,
-        minimumQualifications=dedupe(minimum_qualifications),
-        preferredQualifications=dedupe(preferred_qualifications),
-        responsibilities=dedupe(responsibilities),
-        payDetails=extract_pay_details_from_description(job_description),
     )
 
 
 def build_details_url(*, job_path: Any, job_id: str, base_url: str) -> str | None:
+    details_path = build_details_path(job_path=job_path, job_id=job_id)
+    return f"{base_url}{details_path}"
+
+
+def build_details_path(*, job_path: Any, job_id: str) -> str | None:
     normalized_job_path = to_optional_str(job_path)
     if normalized_job_path:
-        if normalized_job_path.startswith("http://") or normalized_job_path.startswith("https://"):
-            return normalized_job_path
         if normalized_job_path.startswith("/"):
-            return f"{base_url}{normalized_job_path}"
-        return f"{base_url}/{normalized_job_path}"
-    return f"{base_url}/en/jobs/{job_id}"
+            return normalized_job_path
+        if normalized_job_path.startswith("http://") or normalized_job_path.startswith("https://"):
+            parsed = urllib.parse.urlsplit(normalized_job_path)
+            path = parsed.path or "/"
+            if parsed.query:
+                return f"{path}?{parsed.query}"
+            return path
+        return f"/{normalized_job_path}"
+    return f"/en/jobs/{job_id}"
 
 
 def build_apply_url(*, job_id: str, raw_apply_url: Any, base_url: str) -> str | None:
@@ -130,7 +130,7 @@ def parse_posted_ts(value: Any) -> int | None:
     posted_date = to_optional_str(value)
     if not posted_date:
         return None
-    normalized = re.sub(r"\s+", " ", posted_date)
+    normalized = " ".join(posted_date.split())
     for fmt in ("%B %d, %Y", "%b %d, %Y"):
         try:
             parsed = dt.datetime.strptime(normalized, fmt).replace(tzinfo=dt.timezone.utc)
@@ -199,65 +199,95 @@ def extract_locations(payload: Mapping[str, Any]) -> list[Location]:
     return []
 
 
-def coerce_detail_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        combined: list[str] = []
-        for item in value:
-            combined.extend(coerce_detail_list(item))
-        return combined
-
-    if not isinstance(value, str):
-        return []
-
-    raw = value.strip()
-    if not raw:
-        return []
-
-    li_sections = re.findall(r"(?is)<li[^>]*>(.*?)</li>", raw)
-    candidates = li_sections if li_sections else [raw]
-
-    out: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        text = clean_html_fragment(candidate)
-        if not text:
-            continue
-        fragments = re.split(r"(?:\n|•|\- )+", text)
-        for fragment in fragments:
-            normalized = fragment.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            out.append(normalized)
-    return out
-
-
 def clean_html_fragment(value: str) -> str:
-    normalized = (
-        value.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
-        .replace("<br>", "\n")
-        .replace("</p>", "\n")
-        .replace("</li>", "\n")
-    )
-    normalized = re.sub(r"(?is)<[^>]+>", " ", normalized)
-    normalized = html.unescape(normalized)
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"\n{2,}", "\n", normalized)
-    return normalized.strip()
+    return extract_text(value) or ""
 
 
-def extract_section(value: str | None, *, heading: str) -> str | None:
-    if not value:
+def render_job_description(html_payload: str) -> str | None:
+    try:
+        document = lxml_html.fromstring(html_payload)
+    except Exception:
         return None
-    heading_pattern = re.escape(heading.strip())
-    match = re.search(
-        rf"(?is)<h[1-6][^>]*>\s*{heading_pattern}:?\s*</h[1-6]>\s*(.*?)(?=<h[1-6][^>]*>|$)",
-        value,
-    )
-    if match:
-        section = match.group(1).strip()
-        return section or None
-    return None
+
+    title = _first_text(document.xpath("//h1[contains(@class, 'title')]"))
+    content_root = _first_node(document.xpath("//div[@id='job-detail-body']//div[contains(@class, 'content')]"))
+    if content_root is None:
+        return None
+
+    rendered_sections: list[str] = []
+    if title:
+        rendered_sections.append(title)
+
+    for section in content_root.xpath("./div[contains(@class, 'section')]"):
+        heading = _first_text(section.xpath("./h2"))
+        body_text = _render_section_body(section)
+        if not heading and not body_text:
+            continue
+        if heading and body_text:
+            rendered_sections.append(f"{heading}\n{body_text}")
+        elif heading:
+            rendered_sections.append(heading)
+        elif body_text:
+            rendered_sections.append(body_text)
+
+    rendered = "\n\n".join(section for section in rendered_sections if section).strip()
+    return rendered or None
+
+
+def _first_node(nodes: list[object]) -> object | None:
+    return nodes[0] if nodes else None
+
+
+def _first_text(nodes: list[object]) -> str | None:
+    if not nodes:
+        return None
+    node = nodes[0]
+    if not hasattr(node, "itertext"):
+        return None
+    text = " ".join(part.strip() for part in node.itertext() if part.strip())
+    return text or None
+
+
+def _render_section_body(section: object) -> str | None:
+    if not hasattr(section, "xpath"):
+        return None
+
+    chunks: list[str] = []
+    for child in section:
+        if not isinstance(getattr(child, "tag", None), str):
+            continue
+        if child.tag.lower() == "h2":
+            continue
+        text = _render_child_block(child)
+        if text:
+            chunks.append(text)
+
+    rendered = "\n\n".join(chunk for chunk in chunks if chunk).strip()
+    return rendered or None
+
+
+def _render_child_block(node: object) -> str | None:
+    if not hasattr(node, "tag"):
+        return None
+    tag = node.tag.lower() if isinstance(node.tag, str) else ""
+    cloned = copy.deepcopy(node)
+    for br in cloned.xpath(".//br"):
+        br.tail = f"\n{br.tail}" if br.tail else "\n"
+
+    text = cloned.text_content().replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in text.splitlines()]
+    if tag == "ul":
+        body = "\n".join(line.lstrip("-•* ").strip() for line in lines if line)
+        return body or None
+    compact_lines: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if compact_lines and not previous_blank:
+                compact_lines.append("")
+            previous_blank = True
+            continue
+        compact_lines.append(line.lstrip("-•* ").strip())
+        previous_blank = False
+    body = "\n".join(compact_lines).strip()
+    return body or None

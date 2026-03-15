@@ -246,11 +246,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-create-bucket:
+        condition: service_completed_successfully
       scraper-db-init:
         condition: service_completed_successfully
     environment:
       JOBSEARCH_DB_URL: postgresql+psycopg2://airflow:airflow@postgres/airflow
       JOBSEARCH_API_PAGE_SIZE: 25
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_BUCKET: jobsearch-xcom
+      MINIO_SECURE: "false"
     ports:
       - "8000:8000"
 

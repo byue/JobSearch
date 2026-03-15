@@ -5,6 +5,7 @@ import os
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -243,10 +244,6 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             else:
                 sys.modules[name] = cls._saved_modules[name]
 
-    def test_to_json(self) -> None:
-        self.assertIsNone(self.mod._to_json(None))
-        self.assertEqual(self.mod._to_json({"a": 1, "b": [2]}), '{"a":1,"b":[2]}')
-
     def test_resolve_total_pages_from_metadata(self) -> None:
         response = SimpleNamespace(total_results=101, page_size=10, has_next_page=True)
         self.assertEqual(self.mod._resolve_total_pages(response, None), 11)
@@ -446,7 +443,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         fn = self.tasks["jobs_get_details"].fn
         run_info = {"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}
 
-        response_404 = SimpleNamespace(status=404, error="missing", job=None)
+        response_404 = SimpleNamespace(status=404, error="missing", jobDescription=None, postedTs=None)
         client_404 = SimpleNamespace(get_job_details=lambda job_id: response_404)
         with patch.object(self.mod, "build_client", return_value=client_404), patch.object(
             self.mod, "ProxyManagementClient"
@@ -459,29 +456,24 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         mark_missing.assert_called_once()
         upsert_job_details.assert_not_called()
 
-        pay_details = SimpleNamespace(model_dump=lambda mode="json": {"ranges": []})
-        job = SimpleNamespace(
-            jobDescription="desc",
-            minimumQualifications=["m1"],
-            preferredQualifications=["p1"],
-            responsibilities=["r1"],
-            payDetails=pay_details,
-            postedTs=1704067200,
-        )
-        response_ok = SimpleNamespace(status=302, error=None, job=job)
+        response_ok = SimpleNamespace(status=302, error=None, jobDescription="desc", postedTs=1704067200)
         client_ok = SimpleNamespace(get_job_details=lambda job_id: response_ok)
         with patch.object(self.mod, "build_client", return_value=client_ok), patch.object(
             self.mod, "ProxyManagementClient"
-        ), patch.object(self.mod, "upsert_job_details") as upsert_job_details:
+        ), patch.object(self.mod, "put_job_description", return_value="job-details/r1/amazon/j1.txt") as put_job_description, patch.object(
+            self.mod, "upsert_job_details"
+        ) as upsert_job_details:
             out_ok = fn(run_info, "amazon", "j1")
         self.assertTrue(out_ok["success"])
         self.assertTrue(out_ok["job_detail_written"])
+        put_job_description.assert_called_once()
         upsert_job_details.assert_called_once()
+        self.assertEqual(upsert_job_details.call_args.kwargs["posted_ts"], datetime(2024, 1, 1, tzinfo=timezone.utc))
 
     def test_task_get_job_details_invalid_raises(self) -> None:
         fn = self.tasks["jobs_get_details"].fn
         run_info = {"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}
-        response = SimpleNamespace(status=200, error=None, job=None)
+        response = SimpleNamespace(status=200, error=None, jobDescription=None, postedTs=None)
         client = SimpleNamespace(get_job_details=lambda job_id: response)
         with patch.object(self.mod, "build_client", return_value=client), patch.object(self.mod, "ProxyManagementClient"):
             with self.assertRaises(ValueError):

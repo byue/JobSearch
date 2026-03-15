@@ -1,8 +1,6 @@
 import unittest
 from unittest.mock import Mock, patch
 
-import requests
-
 from scrapers.airflow.clients.apple.client import AppleJobsClient
 from common.request_policy import RequestPolicy
 
@@ -23,10 +21,27 @@ class AppleClientTest(unittest.TestCase):
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
 
-        details_html = 'window.__staticRouterHydrationData = JSON.parse("{\\"loaderData\\":{\\"jobDetails\\":{\\"jobsData\\":{\\"description\\":\\"x\\"}}}}");'
-        with patch.object(client.transport, "get_html", return_value=details_html):
+        with patch.object(
+            client.transport,
+            "get_json",
+            return_value={
+                "res": {
+                    "postingTitle": "Apple Engineer",
+                    "jobSummary": "build products",
+                    "description": "design systems",
+                    "minimumQualifications": "<li>python</li>",
+                    "preferredQualifications": "<li>swift</li>",
+                    "eeoContent": "<p>equal opportunity</p>",
+                }
+            },
+        ):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
+            self.assertEqual(details.detailsUrl, "https://jobs.apple.com/en-us/details/1")
+            self.assertEqual(
+                details.jobDescription,
+                "Apple Engineer\n\nSummary\nbuild products\n\nDescription\ndesign systems\n\nMinimum Qualifications\npython\n\nPreferred Qualifications\nswift\n\nequal opportunity",
+            )
 
     def test_validations_and_not_found(self) -> None:
         client = self._client()
@@ -38,10 +53,11 @@ class AppleClientTest(unittest.TestCase):
         with patch.object(client.transport, "get_html", return_value=bad_html):
             with self.assertRaises(ValueError):
                 client.get_jobs(page=1)
-        details_html = 'window.__staticRouterHydrationData = JSON.parse("{\\"errors\\":{\\"jobDetails\\":{\\"status\\":404}},\\"loaderData\\":{}}");'
-        with patch.object(client.transport, "get_html", return_value=details_html):
+
+        with patch.object(client.transport, "get_json", return_value={"res": {}}):
             out = client.get_job_details(job_id="1")
             self.assertEqual(out.status, 404)
+            self.assertEqual(out.detailsUrl, "https://jobs.apple.com/en-us/details/1")
 
     def test_more_validation_branches(self) -> None:
         client = self._client()
@@ -53,25 +69,13 @@ class AppleClientTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.get_jobs(page=1)
 
-        details_missing_mapping = (
-            'window.__staticRouterHydrationData = JSON.parse("{\\"loaderData\\":{\\"jobDetails\\":\\"bad\\"}}");'
-        )
-        with patch.object(client.transport, "get_html", return_value=details_missing_mapping):
-            with self.assertRaises(ValueError):
-                client.get_job_details(job_id="1")
-
-        http_404 = requests.exceptions.HTTPError("not found")
-        http_404.response = requests.Response()
-        http_404.response.status_code = 404
-        with patch.object(client.transport, "get_html", side_effect=http_404):
+        with patch.object(client.transport, "get_json", return_value={"res": {"jobSummary": "   "}}):
             out = client.get_job_details(job_id="1")
             self.assertEqual(out.status, 404)
+            self.assertEqual(out.detailsUrl, "https://jobs.apple.com/en-us/details/1")
 
-        http_500 = requests.exceptions.HTTPError("server error")
-        http_500.response = requests.Response()
-        http_500.response.status_code = 500
-        with patch.object(client.transport, "get_html", side_effect=http_500):
-            with self.assertRaises(requests.exceptions.HTTPError):
+        with patch.object(client.transport, "get_json", return_value={"res": []}):
+            with self.assertRaises(ValueError):
                 client.get_job_details(job_id="1")
 
 

@@ -1,5 +1,4 @@
 import importlib
-import json
 import os
 import sys
 import unittest
@@ -41,11 +40,19 @@ class WebBackendIntegrationTest(unittest.TestCase):
                 cur.execute(schema_sql)
             conn.commit()
 
+        cls._job_descriptions: dict[str, str] = {}
         cls.backend = _fresh_import_backend_main(cls.db_url, page_size=2)
+        cls._minio_patcher = patch.object(
+            cls.backend,
+            "get_job_description",
+            side_effect=lambda *, key: cls._job_descriptions[key],
+        )
+        cls._minio_patcher.start()
         cls.client = TestClient(cls.backend.app)
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._minio_patcher.stop()
         cls._pg.stop()
 
     def _exec(self, sql: str, params: tuple = ()) -> None:
@@ -134,25 +141,13 @@ class WebBackendIntegrationTest(unittest.TestCase):
         )
 
     def _insert_job_details(self, run_id: str, company: str, job_id: str, *, job_description: str) -> None:
+        key = f"job-details/{run_id}/{company}/{job_id}.txt"
+        self._job_descriptions[key] = job_description
         self._insert_job_details_custom(
             run_id,
             company,
             job_id,
-            job_description=job_description,
-            minimum_qualifications=["m1"],
-            preferred_qualifications=["p1"],
-            responsibilities=["r1"],
-            pay_details={
-                "ranges": [
-                    {
-                        "minAmount": 100000,
-                        "maxAmount": 200000,
-                        "currency": "USD",
-                        "interval": "year",
-                    }
-                ],
-                "notes": ["n1"],
-            },
+            job_description_path=key,
         )
 
     def _insert_job_details_custom(
@@ -161,38 +156,24 @@ class WebBackendIntegrationTest(unittest.TestCase):
         company: str,
         job_id: str,
         *,
-        job_description: str | None,
-        minimum_qualifications: list[str] | None,
-        preferred_qualifications: list[str] | None,
-        responsibilities: list[str] | None,
-        pay_details: dict | None,
+        job_description_path: str | None,
     ) -> None:
         self._exec(
             """
             INSERT INTO job_details (
-              run_id, version_ts, company, external_job_id, job_description,
-              minimum_qualifications, preferred_qualifications, responsibilities, pay_details, updated_at
+              run_id, version_ts, company, external_job_id, job_description_path, updated_at
             ) VALUES (
-              %s, now(), %s, %s, %s,
-              %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, now()
+              %s, now(), %s, %s, %s, now()
             )
             ON CONFLICT (run_id, company, external_job_id) DO UPDATE
-            SET job_description = EXCLUDED.job_description,
-                minimum_qualifications = EXCLUDED.minimum_qualifications,
-                preferred_qualifications = EXCLUDED.preferred_qualifications,
-                responsibilities = EXCLUDED.responsibilities,
-                pay_details = EXCLUDED.pay_details,
+            SET job_description_path = EXCLUDED.job_description_path,
                 updated_at = now()
             """,
             (
                 run_id,
                 company,
                 job_id,
-                job_description,
-                json.dumps(minimum_qualifications) if minimum_qualifications is not None else None,
-                json.dumps(preferred_qualifications) if preferred_qualifications is not None else None,
-                json.dumps(responsibilities) if responsibilities is not None else None,
-                json.dumps(pay_details) if pay_details is not None else None,
+                job_description_path,
             ),
         )
 
@@ -288,6 +269,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
             "detail_ok",
             title="Detail OK",
             posted_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            details_url="https://www.amazon.jobs/en/jobs/detail_ok",
         )
         self._insert_job_details(run_id, "amazon", "detail_ok", job_description="Great role")
         self._insert_job(
@@ -296,6 +278,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
             "detail_missing",
             title="Detail Missing",
             posted_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            details_url="https://www.amazon.jobs/en/jobs/detail_missing",
             is_missing_details=True,
         )
         self._set_pointer(run_id)
@@ -303,9 +286,8 @@ class WebBackendIntegrationTest(unittest.TestCase):
         ok = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "detail_ok"})
         self.assertEqual(ok.status_code, 200)
         ok_body = ok.json()
-        self.assertEqual(ok_body["job"]["jobDescription"], "Great role")
-        self.assertEqual(ok_body["job"]["minimumQualifications"], ["m1"])
-        self.assertEqual(ok_body["job"]["payDetails"]["ranges"][0]["currency"], "USD")
+        self.assertEqual(ok_body["jobDescription"], "Great role")
+        self.assertEqual(ok_body["detailsUrl"], "https://www.amazon.jobs/en/jobs/detail_ok")
 
         missing = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "detail_missing"})
         self.assertEqual(missing.status_code, 404)
@@ -358,27 +340,22 @@ class WebBackendIntegrationTest(unittest.TestCase):
             "nulls_1",
             title="Null Fields",
             posted_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            details_url="https://www.amazon.jobs/en/jobs/nulls_1",
         )
         self._insert_job_details_custom(
             run_id,
             "amazon",
             "nulls_1",
-            job_description="",
-            minimum_qualifications=None,
-            preferred_qualifications=None,
-            responsibilities=None,
-            pay_details=None,
+            job_description_path="job-details/it_detail_nulls/amazon/nulls_1.txt",
         )
+        self._job_descriptions["job-details/it_detail_nulls/amazon/nulls_1.txt"] = ""
         self._set_pointer(run_id)
 
         resp = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "nulls_1"})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
-        self.assertEqual(body["job"]["jobDescription"], "")
-        self.assertEqual(body["job"]["minimumQualifications"], [])
-        self.assertEqual(body["job"]["preferredQualifications"], [])
-        self.assertEqual(body["job"]["responsibilities"], [])
-        self.assertIsNone(body["job"]["payDetails"])
+        self.assertEqual(body["jobDescription"], "")
+        self.assertEqual(body["detailsUrl"], "https://www.amazon.jobs/en/jobs/nulls_1")
 
     def test_response_contract_shapes_stable(self) -> None:
         run_id = "it_contract"
@@ -390,6 +367,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
             "contract_1",
             title="Contract Role",
             posted_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            details_url="https://www.amazon.jobs/en/jobs/contract_1",
         )
         self._insert_job_details(run_id, "amazon", "contract_1", job_description="Contract details")
         self._set_pointer(run_id)
@@ -425,24 +403,10 @@ class WebBackendIntegrationTest(unittest.TestCase):
         details = self.client.post("/get_job_details", json={"company": "amazon", "job_id": "contract_1"})
         self.assertEqual(details.status_code, 200)
         details_body = details.json()
-        self.assertEqual(set(details_body.keys()), {"status", "error", "job"})
-        self.assertIsInstance(details_body["job"], dict)
-        self.assertEqual(
-            set(details_body["job"].keys()),
-            {
-                "id",
-                "name",
-                "company",
-                "jobDescription",
-                "postedTs",
-                "minimumQualifications",
-                "preferredQualifications",
-                "responsibilities",
-                "payDetails",
-                "applyUrl",
-                "detailsUrl",
-            },
-        )
+        self.assertEqual(set(details_body.keys()), {"status", "error", "jobDescription", "postedTs", "detailsUrl"})
+        self.assertIsInstance(details_body["jobDescription"], str)
+        self.assertEqual(details_body["postedTs"], 1767225600)
+        self.assertEqual(details_body["detailsUrl"], "https://www.amazon.jobs/en/jobs/contract_1")
 
 
 if __name__ == "__main__":

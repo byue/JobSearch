@@ -187,18 +187,7 @@ describe("App component", () => {
       .mockImplementationOnce(() =>
         makeResponse({
           payload: {
-            job: {
-              company: "amazon",
-              name: "Software Engineer",
-              postedTs: 1700000000,
-              locations: [{ city: "Seattle", state: "WA", country: "US" }],
-              detailsUrl: "https://example.com/details",
-              applyUrl: "https://example.com/apply",
-              jobDescription: "<p>Hello<br>World</p>",
-              minimumQualifications: ["<li>M1</li>"],
-              preferredQualifications: ["P1"],
-              responsibilities: ["R1"]
-            }
+            jobDescription: "<p>Hello<br>World</p>"
           }
         })
       );
@@ -215,9 +204,6 @@ describe("App component", () => {
 
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     expect(await screen.findByText("Job Description")).toBeInTheDocument();
-    expect(screen.getByText("Minimum Qualifications")).toBeInTheDocument();
-    expect(screen.getByText("Preferred Qualifications")).toBeInTheDocument();
-    expect(screen.getByText("Responsibilities")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View details page" })).toHaveAttribute(
       "href",
       "https://example.com/details"
@@ -309,7 +295,15 @@ describe("App component", () => {
       .mockImplementationOnce(() =>
         makeResponse({
           payload: {
-            jobs: [{ id: "role-open", name: "Role Open", company: "amazon", locations: [] }],
+            jobs: [
+              {
+                id: "role-open",
+                name: "Role Open",
+                company: "amazon",
+                locations: [],
+                applyUrl: ""
+              }
+            ],
             total_results: 1,
             pagination_index: 1,
             has_next_page: false
@@ -319,13 +313,8 @@ describe("App component", () => {
       .mockImplementationOnce(() =>
         makeResponse({
           payload: {
-            job: {
-              company: "amazon",
-              name: "Role Open",
-              detailsUrl: "https://example.com/details-only",
-              applyUrl: "",
-              locations: []
-            }
+            jobDescription: "Details only",
+            detailsUrl: "https://example.com/details-only"
           }
         })
       );
@@ -334,7 +323,7 @@ describe("App component", () => {
 
     expect(await screen.findByText("Role Open")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Role Open"));
-    expect(await screen.findByRole("link", { name: "Open posting" })).toHaveAttribute(
+    expect(await screen.findByRole("link", { name: "View details page" })).toHaveAttribute(
       "href",
       "https://example.com/details-only"
     );
@@ -550,10 +539,7 @@ describe("App component", () => {
       .mockImplementationOnce(() =>
         makeResponse({
           payload: {
-            job: {
-              name: "Role Two",
-              locations: []
-            }
+            jobDescription: "Second role details"
           }
         })
       );

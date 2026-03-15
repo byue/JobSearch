@@ -43,7 +43,10 @@ class GoogleParserTest(unittest.TestCase):
             1700000000,
         ]
         details = parser.parse_job_details(row=details_row)
-        self.assertIn("Build", details.responsibilities)
+        self.assertEqual(
+            details.jobDescription,
+            "Engineer\n\nAbout the job\nDescription\n\nMinimum Qualifications\nMin\n\nPreferred Qualifications\nPref\n\nResponsibilities\nBuild",
+        )
 
     def test_misc_helpers(self) -> None:
         self.assertEqual(parser.as_str(1), "1")
@@ -55,11 +58,6 @@ class GoogleParserTest(unittest.TestCase):
         self.assertIsNone(parser.extract_ts_seconds("bad"))
         self.assertEqual(parser.extract_html_text([None, "<p>x</p>"]), "<p>x</p>")
         self.assertEqual(parser.extract_html_text("x"), "x")
-        self.assertIsNotNone(parser.extract_qualification_section("<h2>minimum qualifications</h2><li>x</li>", "minimum qualifications"))
-        self.assertIsNone(parser.extract_qualification_section("abc", "minimum qualifications"))
-        self.assertEqual(parser.extract_list_items("<li>a</li><li>b</li>"), ["a", "b"])
-        self.assertEqual(parser.extract_list_items(""), [])
-        self.assertEqual(parser.extract_list_items("<li> </li><li>a</li><li>a</li>"), ["a"])
         self.assertEqual(parser.clean_html_fragment("<p>a</p>"), "a")
         self.assertTrue(parser.has_next_page(page=1, jobs_count=10, total_results=20, page_size=10))
         self.assertFalse(parser.has_next_page(page=1, jobs_count=0, total_results=None, page_size=None))
@@ -68,8 +66,26 @@ class GoogleParserTest(unittest.TestCase):
         self.assertIn("?page=2", parser.build_public_url(job_id="1", name="A B", page=2, base_url="https://x", results_path="/r/"))
         self.assertEqual(parser.to_locations(["OnlyCountry"])[0].country, "OnlyCountry")
         self.assertEqual(parser.to_locations(["State, Country"])[0].state, "State")
-        self.assertEqual(parser.extract_qualification_section("minimum qualifications: ", "minimum qualifications"), ":")
         self.assertFalse(parser.has_next_page(page=1, jobs_count=5, total_results=None, page_size=10))
+
+    def test_qualification_and_list_formatting_helpers(self) -> None:
+        self.assertIsNone(parser._format_section("About the job", None))
+        self.assertIsNone(parser._format_qualifications(None))
+        self.assertIsNone(parser._format_qualifications("   "))
+        self.assertIsNone(parser._format_qualifications("\n \n"))
+        self.assertIsNone(parser._format_qualifications("\n\t\n"))
+        self.assertEqual(
+            parser._format_qualifications("Minimum qualifications:\nMin\nPreferred qualifications:\nPref"),
+            "Minimum Qualifications\nMin\n\nPreferred Qualifications\nPref",
+        )
+        self.assertEqual(
+            parser._format_qualifications("Some qualification text"),
+            "Minimum Qualifications\nSome qualification text",
+        )
+        self.assertIsNone(parser._strip_list_markers(None))
+        self.assertEqual(parser._strip_list_markers("- A\n* B\n• C\nD"), "A\nB\nC\nD")
+        self.assertIsNone(parser.get([1], 2))
+        self.assertIsNone(parser.extract_html_text([None, None]))
 
 
 if __name__ == "__main__":

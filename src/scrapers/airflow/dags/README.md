@@ -65,13 +65,13 @@ graph TD
 9. `jobs_get_details` (mapped by `{company,job_id}`)
 - Fetches details with proxy retry wrapper.
 - On `404`: marks `jobs.is_missing_details=TRUE` and treats mapped item as handled.
-- On success: upserts `job_details`; backfills `jobs.posted_ts` if detail has it.
+- On success: uploads the description to MinIO, upserts the `job_details` path, and backfills `jobs.posted_ts` if detail has it.
 
 10. `verify_db_consistency`
 - Validates per company:
   - `jobs_count == expected_scraped_ids - missing_details_count`
   - `job_details_count == jobs_count` (excluding `is_missing_details=TRUE` jobs)
-  - all included `job_details.job_description` are non-empty
+  - all included `job_details.job_description_path` are non-empty
 - Fails run on any violation.
 
 11. `update_publish_run`

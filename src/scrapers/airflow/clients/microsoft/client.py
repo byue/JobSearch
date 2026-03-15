@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import requests
 
 from scrapers.airflow.clients.common.base import JobsClient
-from scrapers.airflow.clients.common.http_requests import build_get_url
 from scrapers.airflow.clients.microsoft import parser
 from scrapers.airflow.clients.microsoft.transport import MicrosoftTransport, require_mapping
 from common.request_policy import RequestPolicy
@@ -89,11 +88,8 @@ class MicrosoftJobsClient(JobsClient):
         if not position_id:
             raise ValueError("job_id must be a non-empty string")
         detail_params = [("position_id", position_id), ("domain", self.domain), ("hl", "en")]
-        details_url = build_get_url(
-            base_url=self.base_url,
-            path="/api/pcsx/position_details",
-            params=detail_params,
-        )
+        details_url = parser.build_details_url(job_id=position_id, base_url=self.base_url)
+        assert details_url is not None
 
         try:
             payload = self.transport.get_json(
@@ -107,7 +103,8 @@ class MicrosoftJobsClient(JobsClient):
                 return MicrosoftJobDetailsResponseSchema(
                     status=404,
                     error=f"Job '{position_id}' not found for company 'microsoft' url={details_url}",
-                    job=None,
+                    jobDescription=None,
+                    detailsUrl=details_url,
                 )
             raise
         status = payload.get("status", 200)
@@ -120,7 +117,8 @@ class MicrosoftJobsClient(JobsClient):
                     if not upstream_error
                     else f"{upstream_error} url={details_url}"
                 ),
-                job=None,
+                jobDescription=None,
+                detailsUrl=details_url,
             )
 
         data = require_mapping(payload.get("data"), context="position_details.data")
@@ -128,10 +126,12 @@ class MicrosoftJobsClient(JobsClient):
             return MicrosoftJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{position_id}' not found for company 'microsoft' url={details_url}",
-                job=None,
+                jobDescription=None,
+                detailsUrl=details_url,
             )
         return MicrosoftJobDetailsResponseSchema(
             status=status,
             error=payload.get("error"),
-            job=parser.parse_job_details(payload=data),
+            jobDescription=parser.parse_job_details(payload=data).jobDescription,
+            detailsUrl=details_url,
         )

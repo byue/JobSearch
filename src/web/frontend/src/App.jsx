@@ -154,7 +154,7 @@ export default function App() {
     [companyOptions]
   );
   const detailsPageHref = useMemo(
-    () => jobDetails?.detailsUrl || activePosition?.detailsUrl || "",
+    () => (jobDetails && typeof jobDetails === "object" ? jobDetails.detailsUrl : "") || activePosition?.detailsUrl || "",
     [activePosition, jobDetails]
   );
   const applyHref = useMemo(
@@ -280,20 +280,15 @@ export default function App() {
       }
 
       const payload = await response.json();
-      if (!payload?.job) {
+      if (typeof payload?.jobDescription !== "string") {
         throw new Error(
           typeof payload?.error === "string" ? payload.error : "Failed to load details."
         );
       }
 
       const normalizedDetails = {
-        ...payload.job,
-        _companyName:
-          companyLabelByValue[payload.job.company] ||
-          companyLabelByValue[position.company] ||
-          toTitleCase(payload.job.company) ||
-          toTitleCase(position.company) ||
-          "Company"
+        jobDescription: payload.jobDescription,
+        detailsUrl: typeof payload?.detailsUrl === "string" ? payload.detailsUrl : ""
       };
       detailsCacheRef.current.set(cacheKey, normalizedDetails);
       setJobDetails(normalizedDetails);
@@ -341,15 +336,14 @@ export default function App() {
       : (typeof totalResults === "number" && typeof pageSize === "number" && pageSize > 0
       ? Math.max(1, Math.ceil(totalResults / pageSize))
       : null);
-  const detailsName = jobDetails?.name || activePosition?.name || "Job Details";
+  const detailsName = activePosition?.name || "Job Details";
   const detailsPostedTs =
-    typeof jobDetails?.postedTs === "number"
-      ? jobDetails.postedTs
-      : (typeof activePosition?.postedTs === "number" ? activePosition.postedTs : null);
-  const detailsLocations =
-    Array.isArray(jobDetails?.locations) && jobDetails.locations.length > 0
-      ? jobDetails.locations
-      : (Array.isArray(activePosition?.locations) ? activePosition.locations : []);
+    typeof activePosition?.postedTs === "number" ? activePosition.postedTs : null;
+  const detailsLocations = Array.isArray(activePosition?.locations) ? activePosition.locations : [];
+  const detailsCompanyLabel =
+    companyLabelByValue[activePosition?.company] ||
+    toTitleCase(activePosition?.company) ||
+    "Company";
 
   useEffect(() => {
     if (!isModalOpen) {
@@ -497,7 +491,7 @@ export default function App() {
               <div className="details-content">
                 <h3>{detailsName}</h3>
                 <div className="details-meta">
-                  <span>{jobDetails._companyName}</span>
+                  <span>{detailsCompanyLabel}</span>
                   <span>Posted: {formatPosted(detailsPostedTs)}</span>
                 </div>
 
@@ -549,7 +543,7 @@ export default function App() {
                   </section>
                 )}
 
-                {jobDetails.jobDescription && (
+                {jobDetails && (
                   <section className="details-section">
                     <h4>Job Description</h4>
                     <article className="description-block">
@@ -558,47 +552,6 @@ export default function App() {
                   </section>
                 )}
 
-                {Array.isArray(jobDetails.minimumQualifications) &&
-                  jobDetails.minimumQualifications.length > 0 && (
-                  <section className="details-section">
-                    <h4>Minimum Qualifications</h4>
-                    <ul className="details-list">
-                      {jobDetails.minimumQualifications.map((item, index) => (
-                        <li key={`minimum-qualification-${index}`}>
-                          {normalizeDescription(item)}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-
-                {Array.isArray(jobDetails.preferredQualifications) &&
-                  jobDetails.preferredQualifications.length > 0 && (
-                  <section className="details-section">
-                    <h4>Preferred Qualifications</h4>
-                    <ul className="details-list">
-                      {jobDetails.preferredQualifications.map((item, index) => (
-                        <li key={`preferred-qualification-${index}`}>
-                          {normalizeDescription(item)}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-
-                {Array.isArray(jobDetails.responsibilities) &&
-                  jobDetails.responsibilities.length > 0 && (
-                  <section className="details-section">
-                    <h4>Responsibilities</h4>
-                    <ul className="details-list">
-                      {jobDetails.responsibilities.map((item, index) => (
-                        <li key={`responsibility-${index}`}>
-                          {normalizeDescription(item)}
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
               </div>
             )}
           </div>

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import requests
 
-from scrapers.airflow.clients.amazon.parser import parse_job_details, parse_job_metadata, to_int, to_optional_str
+from scrapers.airflow.clients.amazon.parser import parse_job_metadata, render_job_description, to_int
 from scrapers.airflow.clients.amazon.transport import AmazonTransport
 from scrapers.airflow.clients.common.base import JobsClient
+from scrapers.airflow.clients.common.html_text import extract_text
 from common.request_policy import RequestPolicy
 from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
 
@@ -108,20 +108,12 @@ class AmazonJobsClient(JobsClient):
         normalized_job_id = job_id.strip()
         if not normalized_job_id:
             raise ValueError("job_id must be a non-empty string")
-        detail_query_url = (
-            f"{self.base_url}{self.SEARCH_PATH}?"
-            f"{urllib.parse.urlencode([('job_id_icims[]', normalized_job_id), ('offset', '0'), ('result_limit', '1'), ('sort', 'relevant')])}"
-        )
+        details_path = f"/en/jobs/{normalized_job_id}"
+        error_url = f"{self.base_url}{details_path}"
 
         try:
-            payload = self.transport.get_json(
-                self.SEARCH_PATH,
-                params=[
-                    ("job_id_icims[]", normalized_job_id),
-                    ("offset", "0"),
-                    ("result_limit", "1"),
-                    ("sort", "relevant"),
-                ],
+            html_payload = self.transport.get_text(
+                details_path,
                 request_policy=self.get_request_policy(self.DETAILS_POLICY_KEY),
             )
         except requests.exceptions.HTTPError as exc:
@@ -129,35 +121,26 @@ class AmazonJobsClient(JobsClient):
             if status_code == 404:
                 return AmazonJobDetailsResponseSchema(
                     status=404,
-                    error=f"Job '{normalized_job_id}' not found for company 'amazon' url={detail_query_url}",
-                    job=None,
+                    error=f"Job '{normalized_job_id}' not found for company 'amazon' url={error_url}",
+                    jobDescription=None,
+                    detailsUrl=error_url,
                 )
             raise
-        jobs_raw = payload.get("jobs")
-        if not isinstance(jobs_raw, list):
-            raise ValueError(
-                "Unexpected Amazon API payload for detail.jobs: expected array, "
-                f"got {type(jobs_raw).__name__}"
-            )
 
-        target_payload: Mapping[str, Any] | None = None
-        for item in jobs_raw:
-            if not isinstance(item, Mapping):
-                continue
-            candidate_id = to_optional_str(item.get("id_icims")) or to_optional_str(item.get("id"))
-            if candidate_id == normalized_job_id:
-                target_payload = item
-                break
-
-        if target_payload is None:
+        html_job_description = render_job_description(html_payload)
+        if not html_job_description:
+            html_job_description = extract_text(html_payload, full_document=True)
+        if not html_job_description:
             return AmazonJobDetailsResponseSchema(
                 status=404,
-                error=f"Job '{normalized_job_id}' not found for company 'amazon' url={detail_query_url}",
-                job=None,
+                error=f"Job '{normalized_job_id}' not found for company 'amazon' url={error_url}",
+                jobDescription=None,
+                detailsUrl=error_url,
             )
 
         return AmazonJobDetailsResponseSchema(
             status=200,
             error=None,
-            job=parse_job_details(payload=target_payload),
+            jobDescription=html_job_description,
+            detailsUrl=error_url,
         )

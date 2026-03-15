@@ -1,12 +1,23 @@
-"""Apple transport layer for fetching hydration pages."""
+"""Apple transport layer for Apple Careers HTML and JSON endpoints."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from typing import Any
 
 from common.request_policy import RequestPolicy
-from scrapers.airflow.clients.common.http_requests import build_get_url, request_text_with_backoff
+from scrapers.airflow.clients.common.http_requests import (
+    build_get_url,
+    request_json_with_backoff,
+    request_text_with_backoff,
+)
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
+
+
+def require_mapping(value: Any, *, context: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"Unexpected Apple payload for {context}: expected object, got {type(value).__name__}")
+    return value
 
 
 class AppleTransport:
@@ -28,3 +39,19 @@ class AppleTransport:
             request_policy=request_policy,
             proxy_management_client=self.proxy_management_client,
         )
+
+    def get_json(
+        self,
+        *,
+        path: str,
+        params: Iterable[tuple[str, str]],
+        request_policy: RequestPolicy,
+    ) -> dict[str, Any]:
+        url = build_get_url(base_url=self.base_url, path=path, params=params)
+        payload = request_json_with_backoff(
+            url=url,
+            headers={"Accept": "application/json"},
+            request_policy=request_policy,
+            proxy_management_client=self.proxy_management_client,
+        )
+        return dict(require_mapping(payload, context=path))

@@ -35,16 +35,19 @@ class AppleParserTest(unittest.TestCase):
 
         details = parser.parse_job_details(
             payload={
+                "postingTitle": "Engineer",
                 "jobSummary": "Summary",
                 "description": "Description",
                 "minimumQualifications": "<li>Min</li>",
                 "preferredQualifications": "<li>Pref</li>",
                 "responsibilities": "<li>Resp</li>",
+                "eeoContent": "<p>EEO</p>",
             }
         )
-        self.assertIn("Min", details.minimumQualifications)
-        self.assertIn("Pref", details.preferredQualifications)
-        self.assertIn("Resp", details.responsibilities)
+        self.assertEqual(
+            details.jobDescription,
+            "Engineer\n\nSummary\nSummary\n\nDescription\nDescription\n\nMinimum Qualifications\nMin\n\nPreferred Qualifications\nPref\n\nResponsibilities\nResp\n\nEEO",
+        )
 
     def test_misc_helpers(self) -> None:
         self.assertEqual(parser.slugify_title("Hello World!"), "hello-world")
@@ -58,7 +61,6 @@ class AppleParserTest(unittest.TestCase):
             "https://jobs.apple.com/en-us/details/1/engineer",
         )
         self.assertEqual(parser.extract_locations("bad"), [])
-        self.assertEqual(parser.coerce_detail_list(None), [])
 
     def test_additional_branches(self) -> None:
         self.assertEqual(parser.to_int("-10"), -10)

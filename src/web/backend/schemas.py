@@ -64,17 +64,13 @@ class PayDetails(BaseModel):
 class JobDetailsSchema(BaseModel):
     """Typed schema for one detailed job payload."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: str | None = None
     name: str | None = None
     company: str | None = None
     jobDescription: str | None = None
     postedTs: int | None = None
-    minimumQualifications: list[str] = Field(default_factory=list)
-    preferredQualifications: list[str] = Field(default_factory=list)
-    responsibilities: list[str] = Field(default_factory=list)
-    payDetails: PayDetails | None = None
     applyUrl: str | None = None
     detailsUrl: str | None = None
 
@@ -120,4 +116,6 @@ class GetJobDetailsResponse(BaseModel):
 
     status: int | str | None = 200
     error: Any = None
-    job: JobDetailsSchema | None = None
+    jobDescription: str | None = None
+    postedTs: int | None = None
+    detailsUrl: str | None = None
