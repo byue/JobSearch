@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
-import html
 import json
 import re
 import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
-from scrapers.airflow.clients.common.pay import extract_pay_details_from_description
+from scrapers.airflow.clients.common.html_text import extract_text
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 _HYDRATION_PATTERN = re.compile(
@@ -88,22 +87,26 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str, locale: str
 
 
 def parse_job_details(*, payload: Mapping[str, Any]) -> JobDetailsSchema:
-    summary = to_optional_str(payload.get("jobSummary"))
-    description = to_optional_str(payload.get("description"))
-    job_description_parts = [part for part in [summary, description] if part]
-    job_description = "\n\n".join(job_description_parts) if job_description_parts else None
-
-    minimum_qualifications = coerce_detail_list(payload.get("minimumQualifications"))
-    preferred_qualifications = coerce_detail_list(payload.get("preferredQualifications"))
-    responsibilities = coerce_detail_list(payload.get("responsibilities"))
+    job_description_parts = [
+        extract_text(payload.get("postingTitle")),
+        _format_section("Summary", extract_text(payload.get("jobSummary"))),
+        _format_section("Description", extract_text(payload.get("description"))),
+        _format_section("Minimum Qualifications", extract_text(payload.get("minimumQualifications"))),
+        _format_section("Preferred Qualifications", extract_text(payload.get("preferredQualifications"))),
+        _format_section("Responsibilities", extract_text(payload.get("responsibilities"))),
+        extract_text(payload.get("eeoContent")),
+    ]
+    job_description = "\n\n".join(part for part in job_description_parts if part) or None
 
     return JobDetailsSchema(
         jobDescription=job_description,
-        minimumQualifications=dedupe(minimum_qualifications),
-        preferredQualifications=dedupe(preferred_qualifications),
-        responsibilities=dedupe(responsibilities),
-        payDetails=extract_pay_details_from_description(job_description),
     )
+
+
+def _format_section(title: str, content: str | None) -> str | None:
+    if not content:
+        return None
+    return f"{title}\n{content}"
 
 
 def build_details_url(*, base_url: str, locale: str, job_id: str, transformed_title: str) -> str:
@@ -161,30 +164,3 @@ def parse_posted_ts(value: Any) -> int | None:
 
 def slugify_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "job"
-
-
-def coerce_detail_list(value: Any) -> list[str]:
-    raw = to_optional_str(value)
-    if not raw:
-        return []
-
-    normalized = html.unescape(raw)
-    normalized = (
-        normalized.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("<br/>", "\n")
-        .replace("<br />", "\n")
-        .replace("<br>", "\n")
-        .replace("</p>", "\n")
-        .replace("</li>", "\n")
-        .replace("\u2022", "\n")
-    )
-    normalized = re.sub(r"(?is)<li[^>]*>", "", normalized)
-    normalized = re.sub(r"(?is)<[^>]*>", " ", normalized)
-
-    out: list[str] = []
-    for part in normalized.split("\n"):
-        candidate = re.sub(r"\s+", " ", part).strip(" \t-*")
-        if candidate:
-            out.append(candidate)
-    return out

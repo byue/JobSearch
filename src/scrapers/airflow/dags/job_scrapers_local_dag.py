@@ -30,6 +30,7 @@ from common.request_policy import RequestPolicy
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
 from scrapers.common.env import require_env, require_env_bool, require_env_float, require_env_int
+from scrapers.common.minio import build_job_description_key, put_job_description
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 LOGGER = logging.getLogger(__name__)
@@ -75,12 +76,6 @@ def _resolve_total_pages(response: Any, max_pages: int | None) -> int:
             )
         return max_pages
     return 1
-
-
-def _to_json(value: Any) -> str | None:
-    if value is None:
-        return None
-    return json.dumps(value, separators=(",", ":"))
 
 
 @dag(
@@ -431,38 +426,31 @@ def job_scrapers_local_dag() -> None:
                 "error": response.error,
                 "job_detail_written": False,
             }
-        if not (200 <= status < 400) or response.job is None or response.job.jobDescription is None:
+        if not (200 <= status < 400) or response.jobDescription is None:
             raise ValueError(
                 "Detail fetch did not meet success criteria: "
                 f"company={company} job_id={job_id} status={status} "
-                f"has_job={response.job is not None} "
-                f"has_job_description={response.job is not None and response.job.jobDescription is not None}"
+                f"has_job_description={response.jobDescription is not None}"
             )
-        pay_details = (
-            response.job.payDetails.model_dump(mode="json")
-            if response.job.payDetails is not None
-            else None
-        )
-        posted_ts = getattr(response.job, "postedTs", None)
         job_payload: dict[str, Any] = {
-            "job_description": response.job.jobDescription,
-            "minimum_qualifications": list(response.job.minimumQualifications or []),
-            "preferred_qualifications": list(response.job.preferredQualifications or []),
-            "responsibilities": list(response.job.responsibilities or []),
-            "pay_details": pay_details,
-            "posted_ts_from_details": int(posted_ts) if isinstance(posted_ts, int) else None,
+            "job_description": response.jobDescription,
+            "posted_ts_from_details": response.postedTs,
         }
+        job_description_path = put_job_description(
+            key=build_job_description_key(
+                run_id=run_id,
+                company=company,
+                external_job_id=job_id,
+            ),
+            body=str(job_payload["job_description"]),
+        )
 
         detail_row = {
             "run_id": run_id,
             "version_ts": version_ts,
             "company": company,
             "external_job_id": job_id,
-            "job_description": job_payload.get("job_description"),
-            "minimum_qualifications": _to_json(job_payload.get("minimum_qualifications")),
-            "preferred_qualifications": _to_json(job_payload.get("preferred_qualifications")),
-            "responsibilities": _to_json(job_payload.get("responsibilities")),
-            "pay_details": _to_json(job_payload.get("pay_details")),
+            "job_description_path": job_description_path,
         }
         posted_ts_raw = job_payload.get("posted_ts_from_details")
         upsert_job_details(
@@ -544,7 +532,7 @@ def job_scrapers_local_dag() -> None:
                     f"missing_details={missing_details}"
                 )
 
-            # Rule 3: all job_details must have non-empty job_description.
+            # Rule 3: all job_details must have non-empty job_description_path.
             if missing_desc > 0:
                 violations.append(
                     f"company={company} rule=missing_job_description count={missing_desc}"

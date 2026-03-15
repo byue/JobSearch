@@ -178,11 +178,7 @@ class JobScrapersDbTest(unittest.TestCase):
             "version_ts": datetime.now(timezone.utc),
             "company": "google",
             "external_job_id": "j1",
-            "job_description": "desc",
-            "minimum_qualifications": "[]",
-            "preferred_qualifications": "[]",
-            "responsibilities": "[]",
-            "pay_details": "{}",
+            "job_description_path": "job-details/r1/google/j1.txt",
         }
         with patch.object(self.mod, "_db_engine", return_value=engine):
             self.mod.upsert_job_details("db", detail_row=detail_row, posted_ts=None)
@@ -199,11 +195,7 @@ class JobScrapersDbTest(unittest.TestCase):
             "version_ts": datetime.now(timezone.utc),
             "company": "google",
             "external_job_id": "j1",
-            "job_description": "desc",
-            "minimum_qualifications": "[]",
-            "preferred_qualifications": "[]",
-            "responsibilities": "[]",
-            "pay_details": "{}",
+            "job_description_path": "job-details/r1/google/j1.txt",
         }
         with patch.object(self.mod, "_db_engine", return_value=engine):
             self.mod.upsert_job_details("db", detail_row=detail_row, posted_ts=posted_ts)

@@ -37,6 +37,10 @@ class GoogleClientTest(unittest.TestCase):
         ):
             detail = client.get_job_details(job_id="id1")
             self.assertEqual(detail.status, 200)
+            self.assertEqual(
+                detail.detailsUrl,
+                "https://www.google.com/about/careers/applications/jobs/results/id1-job",
+            )
 
         with patch.object(client.transport, "get_html", return_value="<html/>"), patch(
             "scrapers.airflow.clients.google.client.parser.extract_row_from_ds0",
@@ -52,7 +56,11 @@ class GoogleClientTest(unittest.TestCase):
                 missing.error,
                 "Job 'id1' not found for company 'google' on direct job page url=https://www.google.com/about/careers/applications/jobs/results/id1-job",
             )
-            self.assertIsNone(missing.job)
+            self.assertIsNone(missing.jobDescription)
+            self.assertEqual(
+                missing.detailsUrl,
+                "https://www.google.com/about/careers/applications/jobs/results/id1-job",
+            )
 
         http_404 = requests.exceptions.HTTPError("not found")
         http_404.response = requests.Response()

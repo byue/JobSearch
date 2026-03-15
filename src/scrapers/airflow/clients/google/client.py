@@ -93,7 +93,8 @@ class GoogleJobsClient(JobsClient):
                 return GoogleJobDetailsResponseSchema(
                     status=404,
                     error=f"Job '{target_id}' not found for company 'google' on direct job page url={details_url}",
-                    job=None,
+                    jobDescription=None,
+                    detailsUrl=details_url,
                 )
             raise
         row = parser.extract_row_from_ds0(html_payload)
@@ -101,7 +102,8 @@ class GoogleJobsClient(JobsClient):
             return GoogleJobDetailsResponseSchema(
                 status=404,
                 error=f"Job '{target_id}' not found for company 'google' on direct job page url={details_url}",
-                job=None,
+                jobDescription=None,
+                detailsUrl=details_url,
             )
         row_job_id = parser.as_str(parser.get(row, 0))
         if row_job_id != target_id:
@@ -112,5 +114,6 @@ class GoogleJobsClient(JobsClient):
         return GoogleJobDetailsResponseSchema(
             status=200,
             error=None,
-            job=parser.parse_job_details(row=row),
+            jobDescription=parser.parse_job_details(row=row).jobDescription,
+            detailsUrl=details_url,
         )

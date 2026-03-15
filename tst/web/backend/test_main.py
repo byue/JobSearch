@@ -99,6 +99,14 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._epoch_seconds(naive), int(aware.timestamp()))
         self.assertEqual(m._epoch_seconds(aware), int(aware.timestamp()))
 
+    def test_load_job_description(self) -> None:
+        m = self.module
+        self.assertIsNone(m._load_job_description(None))
+        self.assertIsNone(m._load_job_description("   "))
+        with patch.object(m, "get_job_description", return_value="desc") as get_job_description:
+            self.assertEqual(m._load_job_description("  job-details/r1/amazon/j1.txt  "), "desc")
+        get_job_description.assert_called_once_with(key="job-details/r1/amazon/j1.txt")
+
     def test_db_conn_uses_psycopg_connect(self) -> None:
         m = self.module
         with patch.object(m.psycopg, "connect", return_value=Mock()) as connect_mock:
@@ -271,22 +279,7 @@ class BackendMainTest(unittest.TestCase):
                         "details_url": "https://www.amazon.jobs/en/jobs/job-1",
                         "apply_url": "https://www.amazon.jobs/applicant/jobs/job-1/apply",
                         "posted_ts": m.datetime(2026, 1, 1, tzinfo=m.timezone.utc),
-                        "job_description": "desc",
-                        "minimum_qualifications": ["a"],
-                        "preferred_qualifications": ["b"],
-                        "responsibilities": ["c"],
-                        "pay_details": {
-                            "ranges": [
-                                {
-                                    "minAmount": 100,
-                                    "maxAmount": 200,
-                                    "currency": "USD",
-                                    "interval": "year",
-                                    "context": "base",
-                                }
-                            ],
-                            "notes": ["note"],
-                        },
+                        "job_description_path": "job-details/run-1/amazon/job-1.txt",
                     }
                 )
             ]
@@ -294,19 +287,16 @@ class BackendMainTest(unittest.TestCase):
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
-        ), patch.object(m, "_db_conn", return_value=conn):
+        ), patch.object(m, "_db_conn", return_value=conn), patch.object(
+            m, "_load_job_description", return_value="desc"
+        ):
             response = m.get_job_details(payload, request)
 
         self.assertEqual(response.status, 200)
-        self.assertIsNotNone(response.job)
-        self.assertEqual(response.job.id, "job-1")
-        self.assertEqual(response.job.company, "amazon")
-        self.assertEqual(response.job.detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
-        self.assertEqual(response.job.applyUrl, "https://www.amazon.jobs/applicant/jobs/job-1/apply")
-        self.assertEqual(response.job.jobDescription, "desc")
-        self.assertEqual(response.job.payDetails.ranges[0].currency, "USD")
+        self.assertEqual(response.jobDescription, "desc")
+        self.assertEqual(response.detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
 
-    def test_get_job_details_success_without_pay_details(self) -> None:
+    def test_get_job_details_success_without_optional_fields(self) -> None:
         m = self.module
         request = _make_request()
         payload = m.GetJobDetailsRequest(job_id="job-2", company="amazon")
@@ -320,11 +310,7 @@ class BackendMainTest(unittest.TestCase):
                         "details_url": "https://www.amazon.jobs/en/jobs/job-2",
                         "apply_url": "https://www.amazon.jobs/applicant/jobs/job-2/apply",
                         "posted_ts": m.datetime(2026, 1, 2, tzinfo=m.timezone.utc),
-                        "job_description": "desc2",
-                        "minimum_qualifications": [],
-                        "preferred_qualifications": [],
-                        "responsibilities": [],
-                        "pay_details": None,
+                        "job_description_path": "job-details/run-1/amazon/job-2.txt",
                     }
                 )
             ]
@@ -332,12 +318,14 @@ class BackendMainTest(unittest.TestCase):
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
-        ), patch.object(m, "_db_conn", return_value=conn):
+        ), patch.object(m, "_db_conn", return_value=conn), patch.object(
+            m, "_load_job_description", return_value="desc2"
+        ):
             response = m.get_job_details(payload, request)
 
         self.assertEqual(response.status, 200)
-        self.assertIsNotNone(response.job)
-        self.assertIsNone(response.job.payDetails)
+        self.assertEqual(response.jobDescription, "desc2")
+        self.assertEqual(response.detailsUrl, "https://www.amazon.jobs/en/jobs/job-2")
 
     def test_get_job_details_not_found_and_missing_details(self) -> None:
         m = self.module
@@ -361,11 +349,7 @@ class BackendMainTest(unittest.TestCase):
                     _FakeResult(
                         one={
                             "is_missing_details": True,
-                            "job_description": None,
-                            "minimum_qualifications": None,
-                            "preferred_qualifications": None,
-                            "responsibilities": None,
-                            "pay_details": None,
+                            "job_description_path": None,
                         }
                     )
                 ]

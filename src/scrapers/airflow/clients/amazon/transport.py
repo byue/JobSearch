@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from common.request_policy import RequestPolicy
-from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff
+from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff, request_text_with_backoff
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 
@@ -47,3 +47,25 @@ class AmazonTransport:
         )
         parsed_payload = _require_mapping(payload, context=path)
         return dict(parsed_payload)
+
+    def get_text(
+        self,
+        path: str,
+        *,
+        params: Iterable[tuple[str, str]] = (),
+        request_policy: RequestPolicy,
+    ) -> str:
+        url = build_get_url(
+            base_url=self.base_url,
+            path=path,
+            params=params,
+        )
+        return request_text_with_backoff(
+            url=url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Encoding": "gzip, deflate",
+            },
+            request_policy=request_policy,
+            proxy_management_client=self.proxy_management_client,
+        )

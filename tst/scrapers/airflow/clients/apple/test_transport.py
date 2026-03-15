@@ -16,6 +16,26 @@ class AppleTransportTest(unittest.TestCase):
         )
         self.assertEqual(out, "<html/>")
 
+    @patch("scrapers.airflow.clients.apple.transport.request_json_with_backoff", return_value={"res": {"id": "1"}})
+    def test_get_json(self, _mock_request: Mock) -> None:
+        transport = AppleTransport(base_url="https://jobs.apple.com/", proxy_management_client=Mock())
+        out = transport.get_json(
+            path="/api/v1/jobDetails/1",
+            params=[],
+            request_policy=RequestPolicy(timeout_seconds=1.0, max_retries=1),
+        )
+        self.assertEqual(out["res"]["id"], "1")
+
+    @patch("scrapers.airflow.clients.apple.transport.request_json_with_backoff", return_value=["bad"])
+    def test_get_json_requires_mapping(self, _mock_request: Mock) -> None:
+        transport = AppleTransport(base_url="https://jobs.apple.com/", proxy_management_client=Mock())
+        with self.assertRaises(ValueError):
+            transport.get_json(
+                path="/api/v1/jobDetails/1",
+                params=[],
+                request_policy=RequestPolicy(timeout_seconds=1.0, max_retries=1),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

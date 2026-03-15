@@ -39,6 +39,10 @@ class MicrosoftClientTest(unittest.TestCase):
         with patch.object(client.transport, "get_json", return_value={"status": 200, "data": {"jobDescription": "x"}}):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
+            self.assertEqual(
+                details.detailsUrl,
+                "https://apply.careers.microsoft.com/careers/job/1",
+            )
 
     def test_validation_and_bad_payload(self) -> None:
         client = self._client()
@@ -60,9 +64,13 @@ class MicrosoftClientTest(unittest.TestCase):
             self.assertEqual(details.status, 404)
             self.assertEqual(
                 details.error,
-                "not found url=https://apply.careers.microsoft.com/api/pcsx/position_details?position_id=missing-1&domain=microsoft.com&hl=en",
+                "not found url=https://apply.careers.microsoft.com/careers/job/missing-1",
             )
-            self.assertIsNone(details.job)
+            self.assertIsNone(details.jobDescription)
+            self.assertEqual(
+                details.detailsUrl,
+                "https://apply.careers.microsoft.com/careers/job/missing-1",
+            )
 
     def test_get_job_details_http_404_and_non_404_error_handling(self) -> None:
         client = self._client()
@@ -72,7 +80,7 @@ class MicrosoftClientTest(unittest.TestCase):
         with patch.object(client.transport, "get_json", side_effect=http_404):
             details = client.get_job_details(job_id="missing-1")
             self.assertEqual(details.status, 404)
-            self.assertIsNone(details.job)
+            self.assertIsNone(details.jobDescription)
 
         http_500 = requests.exceptions.HTTPError("server error")
         http_500.response = requests.Response()
@@ -88,9 +96,9 @@ class MicrosoftClientTest(unittest.TestCase):
             self.assertEqual(details.status, 404)
             self.assertEqual(
                 details.error,
-                "Job 'missing-1' not found for company 'microsoft' url=https://apply.careers.microsoft.com/api/pcsx/position_details?position_id=missing-1&domain=microsoft.com&hl=en",
+                "Job 'missing-1' not found for company 'microsoft' url=https://apply.careers.microsoft.com/careers/job/missing-1",
             )
-            self.assertIsNone(details.job)
+            self.assertIsNone(details.jobDescription)
 
 
 if __name__ == "__main__":

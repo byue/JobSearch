@@ -51,7 +51,8 @@ class MetaClientTest(unittest.TestCase):
             detail = client.get_job_details(job_id="1")
             self.assertEqual(detail.status, 404)
             self.assertEqual(detail.error, "Job '1' not found for company 'meta' url=https://www.metacareers.com/jobs/1/")
-            self.assertIsNone(detail.job)
+            self.assertIsNone(detail.jobDescription)
+            self.assertIsNone(detail.postedTs)
         http_404 = requests.exceptions.HTTPError("not found")
         http_404.response = requests.Response()
         http_404.response.status_code = 404
@@ -79,11 +80,11 @@ class MetaClientTest(unittest.TestCase):
         ), patch.object(client, "_parse_job_details") as parse_details, patch.object(
             client, "_extract_posted_ts_from_job_page", return_value=None
         ):
-            parse_details.return_value = JobDetailsSchema(postedTs=1772323200)
+            parse_details.return_value = JobDetailsSchema(jobDescription="desc", postedTs=1772323200)
             detail = client.get_job_details(job_id="1")
             self.assertEqual(detail.status, 200)
-            self.assertIsNotNone(detail.job)
-            self.assertIsNone(detail.job.postedTs)
+            self.assertEqual(detail.jobDescription, "desc")
+            self.assertIsNone(detail.postedTs)
 
     def test_get_job_details_retryable_upstream_error_returns_not_found(self) -> None:
         client = self._client()
@@ -95,7 +96,8 @@ class MetaClientTest(unittest.TestCase):
             detail = client.get_job_details(job_id="1")
             self.assertEqual(detail.status, 404)
             self.assertEqual(detail.error, "Job '1' not found for company 'meta' url=https://www.metacareers.com/jobs/1/")
-            self.assertIsNone(detail.job)
+            self.assertIsNone(detail.jobDescription)
+            self.assertIsNone(detail.postedTs)
 
     def test_get_job_details_uses_job_page_posted_ts_as_source_of_truth(self) -> None:
         client = self._client()
@@ -103,13 +105,13 @@ class MetaClientTest(unittest.TestCase):
             client,
             "_run_graphql_query",
             return_value={"data": {"xcp_requisition_job_description": {"description": "x"}}},
-        ), patch.object(client, "_parse_job_details", return_value=JobDetailsSchema(postedTs=111)), patch.object(
-            client, "_extract_posted_ts_from_job_page", return_value=1772323200
+        ), patch.object(client, "_parse_job_details", return_value=JobDetailsSchema(jobDescription="desc", postedTs=111)), patch.object(
+            client, "_extract_job_page_details", return_value={"postedTs": 1772323200, "jobDescription": "page desc"}
         ):
             detail = client.get_job_details(job_id="1")
             self.assertEqual(detail.status, 200)
-            self.assertIsNotNone(detail.job)
-            self.assertEqual(detail.job.postedTs, 1772323200)
+            self.assertEqual(detail.jobDescription, "desc")
+            self.assertEqual(detail.postedTs, 1772323200)
 
     def test_parse_job_metadata_and_details(self) -> None:
         client = self._client()
@@ -124,20 +126,23 @@ class MetaClientTest(unittest.TestCase):
 
         details = client._parse_job_details(
             payload={
+                "title": "Role",
                 "description": '{"__html":"<p>Hello</p>"}',
                 "posted_date": "2026-03-01T00:00:00Z",
                 "minimum_qualifications": [{"item": "Min"}],
                 "preferred_qualifications": ["Pref"],
                 "responsibilities": [{"item": "Resp"}],
+                "boiler_plate_intro": '{"__html":"<p>About Meta body</p>"}',
+                "california_disclaimer": '{"__html":"<p>California note</p>"}',
                 "public_compensation": [
-                    {"compensation_amount_minimum": "$100,000/year", "compensation_amount_maximum": "$120,000/year"}
+                    {"compensation_amount_minimum": "$100,000/year", "compensation_amount_maximum": "$120,000/year", "has_bonus": True, "has_equity": True}
                 ],
             }
         )
-        self.assertIn("Min", details.minimumQualifications)
-        self.assertIn("Pref", details.preferredQualifications)
-        self.assertIn("Resp", details.responsibilities)
-        self.assertIsNotNone(details.payDetails)
+        self.assertEqual(
+            details.jobDescription,
+            "Role\n\nDescription\nHello\n\nResponsibilities\nResp\n\nMinimum Qualifications\nMin\n\nPreferred Qualifications\nPref\n\nAbout Meta\nAbout Meta body\n\nCalifornia note\n\n$100,000/year to $120,000/year + bonus + equity + benefits\n\nIndividual compensation is determined by skills, qualifications, experience, and location. Compensation details listed in this posting reflect the base hourly rate, monthly rate, or annual salary only, and do not include bonus, equity or sales incentives, if applicable. In addition to base compensation, Meta offers benefits. Learn more about benefits at Meta.",
+        )
         self.assertIsNone(details.postedTs)
 
     def test_graphql_query_and_bootstrap(self) -> None:
@@ -211,6 +216,25 @@ class MetaClientTest(unittest.TestCase):
             client._extract_posted_ts_from_html('<script type="application/ld+json">{"x":1}</script>"datePosted":"2026-03-01"'),
             1772323200,
         )
+        page_details = client._extract_job_page_details_from_html(
+            '<script type="application/ld+json">{"@context":"https://schema.org","@type":"JobPosting","title":"Role","description":"About role","responsibilities":"Do one.&nbsp;Do two.","qualifications":"Need one.&nbsp;Need two.","datePosted":"2026-03-01T00:00:00Z"}</script>'
+        )
+        self.assertEqual(
+            page_details["jobDescription"],
+            "Role\n\nDescription\nAbout role\n\nResponsibilities\nDo one.\n\nDo two.\n\nQualifications\nNeed one.\n\nNeed two.",
+        )
+        self.assertEqual(page_details["postedTs"], 1772323200)
+        about_meta = client._build_about_meta_section(
+            {
+                "boiler_plate_intro": '{"__html":"<p>Meta intro</p>"}',
+                "california_disclaimer": '{"__html":"<p>California text</p>"}',
+                "public_compensation": [{"compensation_amount_minimum": "$1/year", "has_bonus": True}],
+            }
+        )
+        self.assertEqual(
+            about_meta,
+            "About Meta\nMeta intro\n\nCalifornia text\n\n$1/year + bonus + benefits\n\nIndividual compensation is determined by skills, qualifications, experience, and location. Compensation details listed in this posting reflect the base hourly rate, monthly rate, or annual salary only, and do not include bonus, equity or sales incentives, if applicable. In addition to base compensation, Meta offers benefits. Learn more about benefits at Meta.",
+        )
 
         comp = client._extract_public_compensation(
             [{"compensation_amount_minimum": "$100,000/year", "has_bonus": True, "has_equity": True}]
@@ -233,6 +257,23 @@ class MetaClientTest(unittest.TestCase):
         self.assertEqual(client._normalize_currency("€"), "EUR")
         self.assertEqual(client._normalize_interval("yr"), "year")
         self.assertEqual(client._to_locations(["Seattle, WA, USA"])[0].city, "Seattle")
+
+    def test_more_helper_fallbacks(self) -> None:
+        client = self._client()
+        self.assertIsNone(client._extract_job_posting_json_ld('<script type="application/ld+json">   </script>'))
+        self.assertIsNone(client._extract_job_posting_json_ld('<script type="application/ld+json">not-json</script>'))
+        nested = client._find_job_posting_object({"a": {"@type": "JobPosting", "title": "Role"}})
+        self.assertIsNotNone(nested)
+        nested_list = client._find_job_posting_object([1, {"items": [{"@type": "JobPosting", "title": "Role"}]}])
+        self.assertIsNotNone(nested_list)
+        self.assertIsNone(client._normalize_plain_text("   "))
+        self.assertIsNone(client._normalize_htmlish_text("   "))
+        self.assertIsNone(client._format_section("Title", None))
+        self.assertIsNone(client._join_items([]))
+        self.assertIsNone(client._build_compensation_line([]))
+        self.assertIsNone(client._build_compensation_line([1]))
+        self.assertIsNone(client._build_compensation_line([{}]))
+        self.assertIsNone(client._collapse_inline_text(None))
 
     def test_additional_helper_branches(self) -> None:
         client = self._client()

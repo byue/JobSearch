@@ -80,6 +80,21 @@ class _MockCompanyHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/amazon/en/jobs/amz-1":
+            self._html(
+                """
+                <html><body>
+                <h1 class="title">Amazon Engineer</h1>
+                <div id="job-detail-body"><div class="content">
+                <div class="section"><p>build systems</p></div>
+                <div class="section"><h2>Basic Qualifications</h2><ul><li>python</li></ul></div>
+                <div class="section"><h2>Preferred Qualifications</h2><ul><li>aws</li></ul></div>
+                </div></div>
+                </body></html>
+                """
+            )
+            return
+
         if parsed.path == "/apple/en-us/search":
             self._html(
                 _apple_hydration_payload(
@@ -103,23 +118,18 @@ class _MockCompanyHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/apple/en-us/details/apl-1":
-            self._html(
-                _apple_hydration_payload(
-                    {
-                        "loaderData": {
-                            "jobDetails": {
-                                "jobsData": {
-                                    "jobSummary": "build products",
-                                    "description": "design systems",
-                                    "minimumQualifications": "<li>python</li>",
-                                    "preferredQualifications": "<li>swift</li>",
-                                    "responsibilities": "<li>ship code</li>",
-                                }
-                            }
-                        }
+        if parsed.path == "/apple/api/v1/jobDetails/apl-1":
+            self._json(
+                {
+                    "res": {
+                        "postingTitle": "Apple Engineer",
+                        "jobSummary": "build products",
+                        "description": "design systems",
+                        "minimumQualifications": "<li>python</li>",
+                        "preferredQualifications": "<li>swift</li>",
+                        "responsibilities": "<li>ship code</li>",
                     }
-                )
+                }
             )
             return
 
@@ -269,9 +279,10 @@ class AirflowClientsMockEndpointsIntegrationTest(unittest.TestCase):
 
         details = client.get_job_details(job_id="amz-1")
         self.assertEqual(details.status, 200)
-        self.assertIsNotNone(details.job)
-        assert details.job is not None
-        self.assertIn("python", details.job.minimumQualifications)
+        self.assertEqual(
+            details.jobDescription,
+            "Amazon Engineer\n\nbuild systems\n\nBasic Qualifications\npython\n\nPreferred Qualifications\naws",
+        )
 
     def test_apple_client_with_mock_endpoint(self) -> None:
         client = AppleJobsClient(
@@ -286,9 +297,10 @@ class AirflowClientsMockEndpointsIntegrationTest(unittest.TestCase):
 
         details = client.get_job_details(job_id="apl-1")
         self.assertEqual(details.status, 200)
-        self.assertIsNotNone(details.job)
-        assert details.job is not None
-        self.assertIn("python", details.job.minimumQualifications)
+        self.assertEqual(
+            details.jobDescription,
+            "Apple Engineer\n\nSummary\nbuild products\n\nDescription\ndesign systems\n\nMinimum Qualifications\npython\n\nPreferred Qualifications\nswift\n\nResponsibilities\nship code",
+        )
 
     def test_google_client_with_mock_endpoint(self) -> None:
         client = GoogleJobsClient(
@@ -303,10 +315,10 @@ class AirflowClientsMockEndpointsIntegrationTest(unittest.TestCase):
 
         details = client.get_job_details(job_id="gid-1")
         self.assertEqual(details.status, 200)
-        self.assertIsNotNone(details.job)
-        assert details.job is not None
-        self.assertIn("python", details.job.minimumQualifications)
-        self.assertIn("go", details.job.preferredQualifications)
+        self.assertEqual(
+            details.jobDescription,
+            "Google Engineer\n\nAbout the job\ngreat job\n\nMinimum Qualifications\npython\n\nPreferred Qualifications\ngo\n\nResponsibilities\nbuild",
+        )
 
     def test_microsoft_client_with_mock_endpoint(self) -> None:
         client = MicrosoftJobsClient(
@@ -321,7 +333,4 @@ class AirflowClientsMockEndpointsIntegrationTest(unittest.TestCase):
 
         details = client.get_job_details(job_id="ms-1")
         self.assertEqual(details.status, 200)
-        self.assertIsNotNone(details.job)
-        assert details.job is not None
-        self.assertIn("python", details.job.minimumQualifications)
-        self.assertIn("azure", details.job.preferredQualifications)
+        self.assertEqual(details.jobDescription, "build cloud")

@@ -10,7 +10,7 @@ class _DummyJobsClient(JobsClient):
         return GetJobsResponse(status=200, jobs=[])
 
     def get_job_details(self, *, job_id: str) -> GetJobDetailsResponse:
-        return GetJobDetailsResponse(status=200, job=None)
+        return GetJobDetailsResponse(status=200, jobDescription=None)
 
 
 class BaseClientTest(unittest.TestCase):

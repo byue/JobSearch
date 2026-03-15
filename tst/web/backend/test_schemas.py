@@ -11,8 +11,6 @@ from web.backend.schemas import (
     JobDetailsSchema,
     JobMetadata,
     Location,
-    PayDetails,
-    PayRange,
 )
 
 
@@ -41,18 +39,16 @@ class SchemasTest(unittest.TestCase):
         )
         self.assertEqual(metadata.locations[0].country, "US")
 
-        pay = PayDetails(
-            ranges=[PayRange(minAmount=100, maxAmount=200, currency="USD", interval="year", context="base")],
-            notes=["note"],
-        )
         details = JobDetailsSchema(
             jobDescription="desc",
-            minimumQualifications=["a"],
-            preferredQualifications=["b"],
-            responsibilities=["c"],
-            payDetails=pay,
         )
-        self.assertEqual(details.payDetails.ranges[0].currency, "USD")
+        self.assertEqual(details.jobDescription, "desc")
+
+        details_with_extra = JobDetailsSchema(
+            jobDescription="desc",
+            minimumQualifications=["ignored"],
+        )
+        self.assertEqual(details_with_extra.jobDescription, "desc")
 
     def test_response_models(self) -> None:
         jobs_response = GetJobsResponse(
@@ -71,8 +67,10 @@ class SchemasTest(unittest.TestCase):
         companies_response = GetCompaniesResponse(status=200, companies=["amazon", "apple"])
         self.assertEqual(companies_response.companies[0], "amazon")
 
-        details_response = GetJobDetailsResponse(status=200, job=JobDetailsSchema(jobDescription="x"))
-        self.assertEqual(details_response.job.jobDescription, "x")
+        details_response = GetJobDetailsResponse(status=200, jobDescription="x", postedTs=123, detailsUrl="https://details")
+        self.assertEqual(details_response.jobDescription, "x")
+        self.assertEqual(details_response.postedTs, 123)
+        self.assertEqual(details_response.detailsUrl, "https://details")
 
     def test_get_job_details_request_validation(self) -> None:
         self.assertEqual(GetJobDetailsRequest(job_id="1", company="amazon").company, "amazon")

@@ -4,3 +4,5 @@ requests>=2.32.5,<3
 redis>=7.3.0,<8
 curl-cffi>=0.14,<1
 minio>=7.2.20,<8
+lxml>=6.0.2,<7
+trafilatura>=2.0.0,<3

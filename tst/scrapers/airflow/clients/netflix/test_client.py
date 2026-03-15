@@ -2,10 +2,18 @@ import unittest
 from unittest.mock import Mock, patch
 
 import requests
-from web.backend.schemas import JobDetailsSchema
 
 from common.request_policy import RequestPolicy
-from scrapers.airflow.clients.netflix.client import NetflixJobsClient, _dedupe, _require_mapping, _to_int, _to_optional_str
+from scrapers.airflow.clients.netflix.client import (
+    NetflixJobsClient,
+    _dedupe,
+    _extract_job_text,
+    _normalize_description_text,
+    _prepend_title,
+    _require_mapping,
+    _to_int,
+    _to_optional_str,
+)
 
 
 class NetflixClientTest(unittest.TestCase):
@@ -23,8 +31,20 @@ class NetflixClientTest(unittest.TestCase):
         self.assertIsNone(_to_int("x"))
         self.assertEqual(_dedupe(["a", "a", "b"]), ["a", "b"])
         self.assertEqual(_require_mapping({"a": 1}, context="x")["a"], 1)
+        self.assertEqual(_normalize_description_text("A\n\n\nB\n\n  * item\n"), "A\n\nB\n\nitem")
+        self.assertEqual(_normalize_description_text("* one\n\n* two\n\n"), "one\ntwo")
+        self.assertEqual(_normalize_description_text("-\tone\n\n"), "one")
+        self.assertEqual(_normalize_description_text("A\n\n"), "A")
+        self.assertEqual(_normalize_description_text("- one"), "one")
+        self.assertEqual(_extract_job_text("A\n\nB"), "A\n\nB")
+        self.assertEqual(_prepend_title(title="Role", body="Body"), "Role\n\nBody")
         with self.assertRaises(ValueError):
             _require_mapping([], context="x")
+        self.assertIsNone(_normalize_description_text(None))
+        self.assertIsNone(_normalize_description_text("   "))
+        self.assertIsNone(_extract_job_text(None))
+        self.assertIsNone(_extract_job_text("   "))
+        self.assertEqual(_prepend_title(title="Role", body="Role\n\nBody"), "Role\n\nBody")
 
     def test_get_jobs_and_details(self) -> None:
         client = self._client()
@@ -46,10 +66,11 @@ class NetflixClientTest(unittest.TestCase):
         with patch.object(
             client,
             "_get_jobs_payload",
-            return_value={"positions": [{"id": "1", "job_description": "<li>x</li>"}]},
+            return_value={"positions": [{"id": "1", "posting_name": "Role", "job_description": "<li>x</li>"}]},
         ), patch.object(client, "_extract_description_from_job_page", return_value=None):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
+            self.assertEqual(details.jobDescription, "Role\n\nx")
 
         with patch.object(client, "_get_jobs_payload", return_value={"positions": []}), patch.object(
             client, "_extract_description_from_job_page", return_value=None
@@ -60,7 +81,7 @@ class NetflixClientTest(unittest.TestCase):
                 details.error,
                 "Job '1' not found for company 'netflix' url=https://explore.jobs.netflix.net/api/apply/v2/jobs?domain=netflix.com&pid=1",
             )
-            self.assertIsNone(details.job)
+            self.assertIsNone(details.jobDescription)
 
         with patch.object(
             client,
@@ -86,9 +107,7 @@ class NetflixClientTest(unittest.TestCase):
         ), patch.object(client, "_extract_description_from_job_page", return_value=None):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
-            assert isinstance(details.job, JobDetailsSchema)
-            self.assertEqual(details.job.minimumQualifications, ["a"])
-            self.assertEqual(details.job.preferredQualifications, ["b"])
+            self.assertEqual(details.jobDescription, "a\nb")
 
     def test_get_job_details_page_first_success_skips_api_fallback(self) -> None:
         client = self._client()
@@ -98,8 +117,7 @@ class NetflixClientTest(unittest.TestCase):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
             self.assertIsNone(details.error)
-            assert details.job is not None
-            self.assertEqual(details.job.jobDescription, "desc")
+            self.assertEqual(details.jobDescription, "desc")
             get_jobs_payload.assert_not_called()
 
     def test_get_job_details_page_request_exception_falls_back_to_api(self) -> None:
@@ -115,8 +133,7 @@ class NetflixClientTest(unittest.TestCase):
         ):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 200)
-            assert details.job is not None
-            self.assertEqual(details.job.minimumQualifications, ["x"])
+            self.assertEqual(details.jobDescription, "x")
 
     def test_get_job_details_api_http_404_returns_not_found(self) -> None:
         client = self._client()
@@ -154,7 +171,7 @@ class NetflixClientTest(unittest.TestCase):
             details = client.get_job_details(job_id="1")
             self.assertEqual(details.status, 404)
             self.assertEqual(details.error, "Job '1' not found for company 'netflix' url=https://explore.jobs.netflix.net/careers/job/1")
-            self.assertIsNone(details.job)
+            self.assertIsNone(details.jobDescription)
 
     def test_get_jobs_payload(self) -> None:
         client = self._client()
@@ -195,13 +212,15 @@ class NetflixClientTest(unittest.TestCase):
                 client._extract_description_from_job_page(job_id="1", details_url="https://x")
 
         html_payload = (
-            '<script type="application/ld+json">{"@type":"JobPosting","description":"Hello"}</script>'
+            '<script type="application/ld+json">{"@type":"JobPosting","title":"Role","description":"Hello"}</script>'
             '<meta name="description" content="Meta desc">'
         )
         with patch.object(client, "_get_job_page_html", return_value=html_payload):
-            self.assertEqual(client._extract_description_from_job_page(job_id="1", details_url="https://x"), "Hello")
+            self.assertEqual(client._extract_description_from_job_page(job_id="1", details_url="https://x"), "Role\n\nHello")
         with patch.object(client, "_get_job_page_html", return_value='<meta name="description" content="Meta desc">'):
             self.assertEqual(client._extract_description_from_job_page(job_id="1", details_url="https://x"), "Meta desc")
+        with patch.object(client, "_get_job_page_html", return_value="<html><body><p>Visible text</p></body></html>"):
+            self.assertEqual(client._extract_description_from_job_page(job_id="1", details_url="https://x"), "Visible text")
         with patch.object(client, "_get_job_page_html", return_value="<html></html>"):
             self.assertIsNone(client._extract_description_from_job_page(job_id="1", details_url="https://x"))
 
@@ -224,15 +243,6 @@ class NetflixClientTest(unittest.TestCase):
 
         self.assertEqual(client._extract_meta_description('<meta name="description" content="x">'), "x")
         self.assertIsNone(client._extract_meta_description("no-meta"))
-
-        section = client._extract_section("<h2>Responsibilities</h2><li>A</li>", headings=("responsibilities",))
-        self.assertIn("A", section)
-        self.assertIsNone(client._extract_section(None, headings=("x",)))
-
-        self.assertEqual(client._extract_list_items("<li>A</li><li>B</li>"), ["A", "B"])
-        self.assertEqual(client._extract_list_items(""), [])
-        self.assertEqual(client._extract_html_list_blocks("<ul><li>A</li></ul>"), ["<ul><li>A</li></ul>"])
-        self.assertEqual(client._extract_html_list_blocks(None), [])
         self.assertEqual(client._clean_html_fragment("<p>A</p>"), "A")
         self.assertIsNone(client._extract_job_posting_ld_json('<script type="application/ld+json"></script>'))
         self.assertIsNone(client._extract_job_posting_ld_json('<script type="application/ld+json">{bad}</script>'))
@@ -240,12 +250,6 @@ class NetflixClientTest(unittest.TestCase):
         self.assertIsNone(client._find_job_posting_in_json_ld([1, 2, 3]))
         self.assertIsNotNone(client._find_job_posting_in_json_ld({"@graph": [{"@type": "Thing"}, {"@type": "JobPosting"}]}))
         self.assertIsNotNone(client._find_job_posting_in_json_ld([{"@type": "Thing"}, {"@type": "JobPosting"}]))
-        self.assertIn("X", client._extract_section("<strong>Responsibilities</strong><li>X</li>", headings=("responsibilities",)) or "")
-        self.assertIn("Y", client._extract_section("<b>Responsibilities</b><li>Y</li>", headings=("responsibilities",)) or "")
-        self.assertEqual(client._extract_list_items("<p>a<br>b</p>"), ["a", "b"])
-        self.assertEqual(client._extract_list_items("   "), [])
-        self.assertEqual(client._extract_list_items("<li> </li><li>a</li><li>a</li>"), ["a"])
-        self.assertEqual(client._extract_html_list_blocks(" "), [])
 
     def test_more_metadata_branches(self) -> None:
         client = self._client()

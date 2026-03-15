@@ -69,11 +69,7 @@ CREATE TABLE IF NOT EXISTS job_details (
   version_ts                 TIMESTAMPTZ NOT NULL,
   company                    TEXT NOT NULL,
   external_job_id            TEXT NOT NULL,
-  job_description            TEXT,
-  minimum_qualifications     JSONB,
-  preferred_qualifications   JSONB,
-  responsibilities           JSONB,
-  pay_details                JSONB,
+  job_description_path       TEXT,
   updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (run_id, company, external_job_id),
   FOREIGN KEY (run_id, company, external_job_id)
