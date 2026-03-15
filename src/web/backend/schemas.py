@@ -117,5 +117,6 @@ class GetJobDetailsResponse(BaseModel):
     status: int | str | None = 200
     error: Any = None
     jobDescription: str | None = None
+    skills: list[str] = Field(default_factory=list)
     postedTs: int | None = None
     detailsUrl: str | None = None

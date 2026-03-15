@@ -187,7 +187,8 @@ describe("App component", () => {
       .mockImplementationOnce(() =>
         makeResponse({
           payload: {
-            jobDescription: "<p>Hello<br>World</p>"
+            jobDescription: "<p>Hello<br>World</p>",
+            skills: ["Python", "SQL"]
           }
         })
       );
@@ -204,6 +205,9 @@ describe("App component", () => {
 
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     expect(await screen.findByText("Job Description")).toBeInTheDocument();
+    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(screen.getByText("Python")).toBeInTheDocument();
+    expect(screen.getByText("SQL")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View details page" })).toHaveAttribute(
       "href",
       "https://example.com/details"

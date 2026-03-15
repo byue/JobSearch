@@ -15,11 +15,13 @@ from airflow.sdk import dag, get_current_context, task
 from scrapers.airflow.dags.job_scrapers_db import (
     copy_job_details_from_run,
     fetch_existing_job_detail_ids,
+    fetch_job_skill_requests,
     fetch_latest_published_run_id,
     fetch_consistency_counts,
     mark_missing_details,
     publish_jobs_catalog_pointer,
     update_publish_run_status,
+    update_job_skills,
     upsert_companies,
     upsert_job_details,
     upsert_jobs,
@@ -27,10 +29,11 @@ from scrapers.airflow.dags.job_scrapers_db import (
 )
 from scrapers.airflow.clients.client_factory import build_client
 from common.request_policy import RequestPolicy
+from features.client import FeaturesClient
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
 from scrapers.common.env import require_env, require_env_bool, require_env_float, require_env_int
-from scrapers.common.minio import build_job_description_key, put_job_description
+from scrapers.common.minio import build_job_description_key, get_job_description, put_job_description
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 LOGGER = logging.getLogger(__name__)
@@ -118,6 +121,7 @@ def job_scrapers_local_dag() -> None:
     proxy_sensor_soft_fail = require_env_bool("JOBSEARCH_AIRFLOW_PROXY_SENSOR_SOFT_FAIL")
 
     db_url = require_env("JOBSEARCH_DB_URL")
+    features_api_url = require_env("JOBSEARCH_FEATURES_API_URL")
 
     def _build_proxy_management_client() -> ProxyManagementClient:
         return ProxyManagementClient(
@@ -135,6 +139,12 @@ def job_scrapers_local_dag() -> None:
             backoff_factor=client_backoff_factor,
             max_backoff_seconds=client_max_backoff_seconds,
             jitter=client_backoff_jitter,
+        )
+
+    def _build_features_client() -> FeaturesClient:
+        return FeaturesClient(
+            base_url=features_api_url,
+            request_policy=_build_default_request_policy(),
         )
 
     def _proxy_capacity_ready() -> bool:
@@ -470,6 +480,56 @@ def job_scrapers_local_dag() -> None:
             "job_detail_written": True,
         }
 
+    @task(task_id="jobs_build_skill_requests")
+    def build_skill_requests(run_info: dict[str, str]) -> list[dict[str, str]]:
+        run_id = str(run_info["run_id"])
+        return fetch_job_skill_requests(
+            db_url,
+            run_id=run_id,
+            companies=companies,
+        )
+
+    @task(
+        task_id="jobs_extract_skills",
+        map_index_template="{{ ti.xcom_pull(task_ids='jobs_build_skill_requests')[ti.map_index]['company'] }}-{{ ti.xcom_pull(task_ids='jobs_build_skill_requests')[ti.map_index]['job_id'] }}",
+    )
+    def extract_job_skills(run_info: dict[str, str], company: str, job_id: str, job_description_path: str) -> dict[str, Any]:
+        run_id = str(run_info["run_id"])
+        job_description = get_job_description(key=job_description_path)
+        normalized_description = str(job_description or "").strip()
+        if not normalized_description:
+            update_job_skills(
+                db_url,
+                run_id=run_id,
+                company=company,
+                external_job_id=job_id,
+                skills=[],
+            )
+            return {
+                "company": company,
+                "job_id": job_id,
+                "skills_written": 0,
+                "success": True,
+            }
+        features_client = _build_features_client()
+        payload = features_client.get_job_skills(text=normalized_description)
+        raw_skills = payload.get("skills")
+        skills = raw_skills if isinstance(raw_skills, list) else []
+        normalized_skills = [str(skill).strip() for skill in skills if str(skill).strip()]
+        update_job_skills(
+            db_url,
+            run_id=run_id,
+            company=company,
+            external_job_id=job_id,
+            skills=normalized_skills,
+        )
+        return {
+            "company": company,
+            "job_id": job_id,
+            "skills_written": len(normalized_skills),
+            "success": True,
+        }
+
     @task(task_id="verify_db_consistency")
     def verify_db_consistency(
         run_info: dict[str, str],
@@ -638,9 +698,12 @@ def job_scrapers_local_dag() -> None:
     detail_requests = build_detail_requests(run_info, page_results)
     copied_details >> detail_requests
     detail_results = get_job_details.partial(run_info=run_info).expand_kwargs(detail_requests)
+    skill_requests = build_skill_requests(run_info)
+    [copied_details, detail_results] >> skill_requests
+    skill_results = extract_job_skills.partial(run_info=run_info).expand_kwargs(skill_requests)
 
     verification_state = verify_db_consistency(run_info, page_results, detail_requests)
-    detail_results >> verification_state
+    [detail_results, skill_results] >> verification_state
     publish_state = update_publish_run(run_info, first_pages, page_results, detail_results)
     verification_state >> publish_state
     publish_db_pointer(run_info, publish_state)

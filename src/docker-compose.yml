@@ -85,6 +85,8 @@ services:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
+      features:
+        condition: service_healthy
       scraper-db-init:
         condition: service_completed_successfully
     env_file:
@@ -119,6 +121,8 @@ services:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
+      features:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
       scraper-db-init:
@@ -154,6 +158,8 @@ services:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
+      features:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
       scraper-db-init:
@@ -187,6 +193,8 @@ services:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
+      features:
+        condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
       scraper-db-init:
@@ -271,6 +279,11 @@ services:
       JOBSEARCH_FEATURES_TECHNICAL_PATH: /opt/jobsearch/src/features/data/technical_skills.csv
       JOBSEARCH_FEATURES_KEYWORD_PATH: /opt/jobsearch/src/features/data/tech_keywords.csv
       JOBSEARCH_FEATURES_SPACY_MODEL: en_core_web_sm
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/openapi.json').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     ports:
       - "8010:8010"
 
