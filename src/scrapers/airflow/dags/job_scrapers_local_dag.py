@@ -504,6 +504,7 @@ def job_scrapers_local_dag() -> None:
                 company=company,
                 external_job_id=job_id,
                 skills=[],
+                job_description_embedding=[],
             )
             return {
                 "company": company,
@@ -515,6 +516,8 @@ def job_scrapers_local_dag() -> None:
         payload = features_client.get_job_skills(text=normalized_description)
         raw_skills = payload.get("skills")
         skills = raw_skills if isinstance(raw_skills, list) else []
+        raw_embedding = payload.get("embedding")
+        embedding = raw_embedding if isinstance(raw_embedding, list) else []
         normalized_skills = [str(skill).strip() for skill in skills if str(skill).strip()]
         update_job_skills(
             db_url,
@@ -522,6 +525,7 @@ def job_scrapers_local_dag() -> None:
             company=company,
             external_job_id=job_id,
             skills=normalized_skills,
+            job_description_embedding=embedding,
         )
         return {
             "company": company,
@@ -558,6 +562,7 @@ def job_scrapers_local_dag() -> None:
             missing_details_by_company,
             details_count_by_company,
             missing_description_by_company,
+            missing_embedding_by_company,
         ) = fetch_consistency_counts(
             db_url,
             run_id=run_id,
@@ -572,6 +577,7 @@ def job_scrapers_local_dag() -> None:
             missing_details = missing_details_by_company.get(company, 0)
             details_count = details_count_by_company.get(company, 0)
             missing_desc = missing_description_by_company.get(company, 0)
+            missing_embedding = missing_embedding_by_company.get(company, 0)
             expected_jobs_excluding_missing = max(0, expected_jobs - missing_details)
             expected_details_excluding_missing = max(0, expected_detail_jobs - missing_details)
 
@@ -596,6 +602,12 @@ def job_scrapers_local_dag() -> None:
             if missing_desc > 0:
                 violations.append(
                     f"company={company} rule=missing_job_description count={missing_desc}"
+                )
+
+            # Rule 4: all described jobs must also have a non-empty description embedding.
+            if missing_embedding > 0:
+                violations.append(
+                    f"company={company} rule=missing_job_description_embedding count={missing_embedding}"
                 )
 
         if violations:

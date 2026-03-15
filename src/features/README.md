@@ -24,7 +24,8 @@ Response body:
 {
   "status": 200,
   "error": null,
-  "skills": ["Python"]
+  "skills": ["Python"],
+  "embedding": [0.1, -0.2]
 }
 ```
 
@@ -33,6 +34,7 @@ Response body:
 - `JOBSEARCH_FEATURES_TECHNICAL_PATH`
 - `JOBSEARCH_FEATURES_KEYWORD_PATH`
 - `JOBSEARCH_FEATURES_SPACY_MODEL`
+- `JOBSEARCH_FEATURES_EMBEDDING_MODEL`
 
 ## CLI
 

@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   state                TEXT,
   country              TEXT,
   skills               JSONB NOT NULL DEFAULT '[]'::jsonb,
+  job_description_embedding JSONB NOT NULL DEFAULT '[]'::jsonb,
   posted_ts            TIMESTAMPTZ,
   is_missing_details   BOOLEAN NOT NULL DEFAULT FALSE,
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),

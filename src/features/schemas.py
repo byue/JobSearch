@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 class ExtractJobSkillsRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
+
 class ExtractJobSkillsResponse(BaseModel):
     status: int = 200
     error: str | None = None
     skills: list[str]
+    embedding: list[float] = Field(default_factory=list)

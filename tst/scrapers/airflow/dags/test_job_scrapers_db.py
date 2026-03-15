@@ -228,20 +228,27 @@ class JobScrapersDbTest(unittest.TestCase):
                 {"company": "unknown", "cnt": 999},
             ]
         )
-        conn = _FakeConnection(returns=[jobs_rows, details_rows, missing_desc_rows])
+        missing_embedding_rows = _FakeMappingsResult(
+            [
+                {"company": "google", "cnt": 2},
+                {"company": "unknown", "cnt": 999},
+            ]
+        )
+        conn = _FakeConnection(returns=[jobs_rows, details_rows, missing_desc_rows, missing_embedding_rows])
         engine = _FakeEngine(conn)
         with patch.object(self.mod, "_db_engine", return_value=engine):
-            jobs, missing, details, missing_desc = self.mod.fetch_consistency_counts(
+            jobs, missing, details, missing_desc, missing_embedding = self.mod.fetch_consistency_counts(
                 "db",
                 run_id="r1",
                 companies=["google", "meta"],
             )
         self.assertTrue(engine.disposed)
-        self.assertEqual(len(conn.calls), 3)
+        self.assertEqual(len(conn.calls), 4)
         self.assertEqual(jobs, {"google": 3, "meta": 0})
         self.assertEqual(missing, {"google": 1, "meta": 0})
         self.assertEqual(details, {"google": 2, "meta": 0})
         self.assertEqual(missing_desc, {"google": 1, "meta": 0})
+        self.assertEqual(missing_embedding, {"google": 2, "meta": 0})
 
     def test_fetch_latest_published_run_id(self) -> None:
         conn = _FakeConnection(returns=[_FakeMappingsResult([{"run_id": "published-run"}])])
@@ -356,12 +363,14 @@ class JobScrapersDbTest(unittest.TestCase):
                 company="google",
                 external_job_id="j1",
                 skills=["Python", " SQL ", ""],
+                job_description_embedding=[0.1, 2, -0.3],
             )
         self.assertTrue(engine.disposed)
         self.assertEqual(conn.calls[0][1]["run_id"], "r1")
         self.assertEqual(conn.calls[0][1]["company"], "google")
         self.assertEqual(conn.calls[0][1]["external_job_id"], "j1")
         self.assertEqual(conn.calls[0][1]["skills"], '["Python", "SQL"]')
+        self.assertEqual(conn.calls[0][1]["job_description_embedding"], "[0.1, 2.0, -0.3]")
 
     def test_update_publish_run_status(self) -> None:
         conn = _FakeConnection()
