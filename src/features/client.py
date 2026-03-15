@@ -66,3 +66,16 @@ class FeaturesClient:
         if not isinstance(payload, dict):
             raise ValueError("Invalid job_skills payload")
         return payload
+
+    def get_query_embedding(self, *, text: str) -> dict[str, Any]:
+        normalized_text = str(text).strip()
+        if not normalized_text:
+            raise ValueError("text must be non-empty")
+        payload = self._request(
+            method="POST",
+            path="/query_embedding",
+            payload={"text": normalized_text},
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid query_embedding payload")
+        return payload

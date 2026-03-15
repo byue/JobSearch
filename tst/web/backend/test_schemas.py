@@ -22,14 +22,14 @@ class SchemasTest(unittest.TestCase):
     def test_get_jobs_request_validation(self) -> None:
         self.assertEqual(GetJobsRequest(company="amazon").pagination_index, 1)
         with self.assertRaises(ValidationError):
-            GetJobsRequest(company="", pagination_index=1)
-        with self.assertRaises(ValidationError):
             GetJobsRequest(company="amazon", pagination_index=0)
+        self.assertEqual(GetJobsRequest(company=None, query="python").query, "python")
 
     def test_job_metadata_and_details_schema(self) -> None:
         location = Location(country="US", state="CA", city="SF")
         metadata = JobMetadata(
             id="1",
+            runId="run-1",
             name="Role",
             company="amazon",
             locations=[location],
@@ -38,6 +38,7 @@ class SchemasTest(unittest.TestCase):
             detailsUrl="https://details",
         )
         self.assertEqual(metadata.locations[0].country, "US")
+        self.assertEqual(metadata.runId, "run-1")
 
         details = JobDetailsSchema(
             jobDescription="desc",
@@ -85,6 +86,7 @@ class SchemasTest(unittest.TestCase):
             GetJobDetailsRequest(job_id="", company="amazon")
         with self.assertRaises(ValidationError):
             GetJobDetailsRequest(job_id="1", company="")
+        self.assertEqual(GetJobDetailsRequest(job_id="1", company="amazon", runId="run-1").runId, "run-1")
 
 
 if __name__ == "__main__":

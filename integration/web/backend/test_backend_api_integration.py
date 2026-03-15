@@ -239,22 +239,61 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertEqual(companies_old.status_code, 200)
         self.assertEqual(companies_old.json()["companies"], ["amazon"])
 
-        old_jobs = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
+        with patch.object(
+            self.backend,
+            "_browse_jobs",
+            return_value=(
+                [
+                    self.backend.JobMetadata(
+                        id="old_1",
+                        runId=old_run,
+                        name="Old Role",
+                        company="amazon",
+                        locations=[self.backend.Location(city="Seattle", state="WA", country="US")],
+                    )
+                ],
+                1,
+                False,
+            ),
+        ):
+            old_jobs = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
         self.assertEqual(old_jobs.status_code, 200)
         self.assertEqual(old_jobs.json()["jobs"][0]["id"], "old_1")
 
         self._set_pointer(new_run)
-        page1 = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
-        self.assertEqual(page1.status_code, 200)
-        body1 = page1.json()
-        self.assertEqual(body1["total_results"], 3)  # excludes is_missing_details=true
-        self.assertEqual(body1["page_size"], 2)
-        self.assertEqual(body1["total_pages"], 2)
-        self.assertEqual(body1["pagination_index"], 1)
-        self.assertTrue(body1["has_next_page"])
-        self.assertEqual([job["id"] for job in body1["jobs"]], ["new_1", "new_2"])
+        with patch.object(
+            self.backend,
+            "_browse_jobs",
+            side_effect=[
+                (
+                    [
+                        self.backend.JobMetadata(id="new_1", runId=new_run, name="New Role 1", company="amazon"),
+                        self.backend.JobMetadata(id="new_2", runId=new_run, name="New Role 2", company="amazon"),
+                    ],
+                    3,
+                    True,
+                ),
+                (
+                    [
+                        self.backend.JobMetadata(id="new_null", runId=new_run, name="Null Posted", company="amazon"),
+                    ],
+                    3,
+                    False,
+                ),
+            ],
+        ):
+            page1 = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
+            self.assertEqual(page1.status_code, 200)
+            body1 = page1.json()
+            self.assertEqual(body1["total_results"], 3)  # excludes is_missing_details=true
+            self.assertEqual(body1["page_size"], 2)
+            self.assertEqual(body1["total_pages"], 2)
+            self.assertEqual(body1["pagination_index"], 1)
+            self.assertTrue(body1["has_next_page"])
+            self.assertEqual([job["id"] for job in body1["jobs"]], ["new_1", "new_2"])
 
-        page2 = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 2})
+            page2 = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 2})
+        self.assertEqual(page1.status_code, 200)
         self.assertEqual(page2.status_code, 200)
         body2 = page2.json()
         self.assertEqual(body2["page_size"], 2)
@@ -313,7 +352,8 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertEqual(unsupported.status_code, 400)
         self.assertIn("Unsupported company", unsupported.text)
 
-        cased = self.client.post("/get_jobs", json={"company": "Amazon", "pagination_index": 1})
+        with patch.object(self.backend, "_browse_jobs", return_value=([], 0, False)):
+            cased = self.client.post("/get_jobs", json={"company": "Amazon", "pagination_index": 1})
         self.assertEqual(cased.status_code, 200)
 
     def test_db_failure_returns_500(self) -> None:
@@ -382,7 +422,24 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertEqual(companies.status_code, 200)
         self.assertEqual(set(companies.json().keys()), {"status", "error", "companies"})
 
-        jobs = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
+        with patch.object(
+            self.backend,
+            "_browse_jobs",
+            return_value=(
+                [
+                    self.backend.JobMetadata(
+                        id="contract_1",
+                        runId=run_id,
+                        name="Contract Role",
+                        company="amazon",
+                        locations=[self.backend.Location(city="Seattle", state="WA", country="US")],
+                    )
+                ],
+                1,
+                False,
+            ),
+        ):
+            jobs = self.client.post("/get_jobs", json={"company": "amazon", "pagination_index": 1})
         self.assertEqual(jobs.status_code, 200)
         jobs_body = jobs.json()
         self.assertEqual(
@@ -401,7 +458,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertGreaterEqual(len(jobs_body["jobs"]), 1)
         self.assertEqual(
             set(jobs_body["jobs"][0].keys()),
-            {"id", "name", "company", "locations", "postedTs", "applyUrl", "detailsUrl"},
+            {"id", "runId", "name", "company", "locations", "postedTs", "applyUrl", "detailsUrl"},
         )
         if jobs_body["jobs"][0]["locations"]:
             self.assertEqual(set(jobs_body["jobs"][0]["locations"][0].keys()), {"country", "state", "city"})

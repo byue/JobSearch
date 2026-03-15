@@ -10,7 +10,12 @@ from typing import Any
 from fastapi import FastAPI
 
 from features.job_skills import DEFAULT_SPACY_MODEL, SkillExtractor
-from features.schemas import ExtractJobSkillsRequest, ExtractJobSkillsResponse
+from features.schemas import (
+    ExtractJobSkillsRequest,
+    ExtractJobSkillsResponse,
+    ExtractQueryEmbeddingRequest,
+    ExtractQueryEmbeddingResponse,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,5 +99,14 @@ def get_job_skills(payload: ExtractJobSkillsRequest) -> ExtractJobSkillsResponse
         status=200,
         error=None,
         skills=_skill_extractor().extract(payload.text),
+        embedding=_extract_embedding(payload.text),
+    )
+
+
+@app.post("/query_embedding", response_model=ExtractQueryEmbeddingResponse)
+def get_query_embedding(payload: ExtractQueryEmbeddingRequest) -> ExtractQueryEmbeddingResponse:
+    return ExtractQueryEmbeddingResponse(
+        status=200,
+        error=None,
         embedding=_extract_embedding(payload.text),
     )

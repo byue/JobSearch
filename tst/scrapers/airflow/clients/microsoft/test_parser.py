@@ -56,6 +56,36 @@ class MicrosoftParserTest(unittest.TestCase):
             ),
         )
 
+    def test_render_job_description_preserves_text_after_heading_br(self) -> None:
+        details = parser.parse_job_details(
+            payload={
+                "name": "Senior Product Manager",
+                "jobDescription": (
+                    "<b>Overview</b><br>Calendar Copilot is at the forefront.<br><br>"
+                    "<b>Responsibilities</b><br><ul><li>Define vision</li></ul>"
+                ),
+            }
+        )
+        self.assertEqual(
+            details.jobDescription,
+            "\n\n".join(
+                [
+                    "Senior Product Manager",
+                    "Overview\nCalendar Copilot is at the forefront.",
+                    "Responsibilities\nDefine vision",
+                ]
+            ),
+        )
+
+    def test_render_job_description_preserves_heading_and_block_tail_text(self) -> None:
+        rendered = parser.render_job_description(
+            "<b>Overview</b>Tail intro<p>Main paragraph</p>Tail outro"
+        )
+        self.assertEqual(
+            rendered,
+            "Overview\nTail intro\n\nMain paragraph\n\nTail outro",
+        )
+
     def test_misc_helpers(self) -> None:
         locs = parser.to_locations(["Seattle, WA, USA"])
         self.assertEqual(locs[0].city, "Seattle")

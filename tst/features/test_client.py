@@ -166,6 +166,54 @@ class FeaturesClientTest(unittest.TestCase):
             timeout=2.0,
         )
 
+    def test_get_query_embedding(self) -> None:
+        class _FakeResponse:
+            def __init__(self, payload=None) -> None:
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client = self.mod.FeaturesClient(
+            base_url="http://localhost:8010",
+            request_policy=self.RequestPolicy(timeout_seconds=2.0, max_retries=1),
+        )
+        client._session = Mock()
+        client._session.request.return_value = _FakeResponse(payload={"embedding": [0.1, -0.2]})
+
+        out = client.get_query_embedding(text=" Need Python ")
+
+        self.assertEqual(out["embedding"], [0.1, -0.2])
+        client._session.request.assert_called_once_with(
+            method="POST",
+            url="http://localhost:8010/query_embedding",
+            json={"text": "Need Python"},
+            timeout=2.0,
+        )
+
+    def test_get_query_embedding_validates_text_and_payload(self) -> None:
+        client = self.mod.FeaturesClient(
+            base_url="http://localhost:8010",
+            request_policy=self.RequestPolicy(timeout_seconds=2.0, max_retries=1),
+        )
+        with self.assertRaises(ValueError):
+            client.get_query_embedding(text="   ")
+
+        class _FakeResponse:
+            def json(self):
+                return []
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client._session = Mock()
+        client._session.request.return_value = _FakeResponse()
+        with self.assertRaises(ValueError):
+            client.get_query_embedding(text="Need Python")
+
     def test_get_job_skills_uses_connect_timeout_tuple(self) -> None:
         class _FakeResponse:
             def __init__(self, payload=None) -> None:

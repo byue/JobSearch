@@ -118,6 +118,20 @@ class BackendMainTest(unittest.TestCase):
             _ = m._db_conn()
         connect_mock.assert_called_once_with(m._DB_URL, row_factory=m.dict_row)
 
+    def test_request_policy_and_client_builders(self) -> None:
+        m = self.module
+        policy = m._default_request_policy()
+        self.assertEqual(policy.timeout_seconds, 10.0)
+        self.assertEqual(policy.connect_timeout_seconds, 2.0)
+
+        with patch.object(m, "FeaturesClient", return_value="features-client") as features_client:
+            self.assertEqual(m._features_client(), "features-client")
+        features_client.assert_called_once()
+
+        with patch.object(m, "ElasticsearchClient", return_value="es-client") as es_client:
+            self.assertEqual(m._es_client(), "es-client")
+        es_client.assert_called_once()
+
     def test_active_run_id_success_and_failure(self) -> None:
         m = self.module
 
@@ -147,6 +161,131 @@ class BackendMainTest(unittest.TestCase):
         with patch.object(m._LOGGER, "info") as info_mock:
             m._log_company_request(endpoint="/x", company="amazon", status=None)
         info_mock.assert_called_once()
+
+    def test_search_helper_normalizers(self) -> None:
+        m = self.module
+        self.assertIsNone(m._normalize_company_filter(None))
+        self.assertIsNone(m._normalize_company_filter("__all__"))
+        self.assertEqual(m._normalize_company_filter(" Amazon "), "amazon")
+        self.assertEqual(m._normalize_posted_within(" 7d "), "7d")
+        self.assertEqual(m._normalize_posted_within("bad"), None)
+
+        with patch.object(m, "_validate_company_in_run", return_value="amazon") as validate_company:
+            self.assertIsNone(m._resolve_company_filter("run-1", None))
+            self.assertEqual(m._resolve_company_filter("run-1", "Amazon"), "amazon")
+        validate_company.assert_called_once_with("run-1", "amazon")
+
+        naive = m.datetime(2026, 1, 1, 0, 0, 0)
+        aware = m.datetime(2026, 1, 1, 0, 0, 0, tzinfo=m.timezone.utc)
+        self.assertEqual(m._epoch_millis(naive), int(aware.timestamp() * 1000))
+        self.assertEqual(m._epoch_millis(aware), int(aware.timestamp() * 1000))
+        self.assertEqual(m._epoch_millis(None), None)
+
+        self.assertEqual(m._format_es_posted_ts(1735689600), 1735689600)
+        self.assertEqual(m._format_es_posted_ts(1735689600000), 1735689600)
+        self.assertEqual(m._format_es_posted_ts("2026-01-01T00:00:00Z"), int(aware.timestamp()))
+        self.assertIsNone(m._format_es_posted_ts("bad"))
+        self.assertIsNone(m._format_es_posted_ts(""))
+        self.assertIsNone(m._format_es_posted_ts(None))
+
+        self.assertEqual(m._build_location_from_source({}), [])
+        locations = m._build_location_from_source({"city": "Seattle", "state": "WA", "country": "US"})
+        self.assertEqual(len(locations), 1)
+        self.assertEqual(locations[0].city, "Seattle")
+
+        self.assertEqual(m._hits_from_response({}), [])
+        self.assertEqual(m._hits_from_response({"hits": {"hits": [{"_id": "1"}]}}), [{"_id": "1"}])
+        self.assertEqual(m._total_hits_from_response({}), 0)
+        self.assertEqual(m._total_hits_from_response({"hits": {"total": {"value": 3}}}), 3)
+        self.assertEqual(m._total_hits_from_response({"hits": {"total": 4}}), 4)
+
+        self.assertEqual(m._search_filters(None, None), [])
+        self.assertEqual(m._search_filters("amazon", None), [{"term": {"company": "amazon"}}])
+        self.assertEqual(m._search_filters("amazon", "7d"), [{"term": {"company": "amazon"}}, {"range": {"posted_ts": {"gte": "now-7d"}}}])
+
+    def test_job_metadata_and_browse_helpers(self) -> None:
+        m = self.module
+        empty_job = m._job_metadata_from_hit({"_source": None})
+        self.assertEqual(empty_job.id, "")
+        self.assertEqual(empty_job.locations, [])
+
+        source_hit = {
+            "_source": {
+                "external_job_id": "job-1",
+                "run_id": "run-1",
+                "title": "Role",
+                "company": "amazon",
+                "city": "Seattle",
+                "state": "WA",
+                "country": "US",
+                "posted_ts": "2026-01-01T00:00:00Z",
+                "apply_url": "https://apply",
+                "details_url": "https://details",
+            }
+        }
+        job = m._job_metadata_from_hit(source_hit)
+        self.assertEqual(job.id, "job-1")
+        self.assertEqual(job.runId, "run-1")
+        self.assertEqual(job.company, "amazon")
+        self.assertEqual(job.locations[0].country, "US")
+
+        es_client = Mock()
+        es_client.search.return_value = {"hits": {"hits": [source_hit], "total": {"value": 2}}}
+        with patch.object(m, "_es_client", return_value=es_client):
+            jobs, total, has_next = m._browse_jobs("amazon", posted_within="7d", page=1)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(total, 2)
+        self.assertTrue(has_next)
+        body = es_client.search.call_args.kwargs["body"]
+        self.assertEqual(body["sort"][0]["posted_ts"]["order"], "desc")
+        self.assertEqual(body["query"]["bool"]["filter"], [{"term": {"company": "amazon"}}, {"range": {"posted_ts": {"gte": "now-7d"}}}])
+
+    def test_query_embedding_rrf_and_search_helpers(self) -> None:
+        m = self.module
+        with patch.object(m, "_features_client", return_value=Mock(get_query_embedding=lambda text: {"embedding": [1, "2"]})):
+            self.assertEqual(m._query_embedding("python"), [1.0, 2.0])
+        with patch.object(m, "_features_client", return_value=Mock(get_query_embedding=lambda text: {"embedding": "bad"})):
+            self.assertEqual(m._query_embedding("python"), [])
+
+        fused = m._rrf_fuse_hits(
+            [{"_id": "a", "_source": {"posted_ts": "2026-01-01T00:00:00Z"}}, {"_id": "", "_source": {}}],
+            [{"_id": "b", "_source": {"posted_ts": "2025-01-01T00:00:00Z"}}, {"_id": "a", "_source": {"posted_ts": "2026-01-01T00:00:00Z"}}],
+        )
+        self.assertEqual([item["_id"] for item in fused], ["a", "b"])
+
+        fused_tie = m._rrf_fuse_hits(
+            [{"_id": "old", "_source": {"posted_ts": "2025-01-01T00:00:00Z"}}, {"_id": "new", "_source": {"posted_ts": "2026-01-01T00:00:00Z"}}],
+            [{"_id": "new", "_source": {"posted_ts": "2026-01-01T00:00:00Z"}}, {"_id": "old", "_source": {"posted_ts": "2025-01-01T00:00:00Z"}}],
+        )
+        self.assertEqual([item["_id"] for item in fused_tie], ["new", "old"])
+
+        es_client = Mock()
+        es_client.search.side_effect = [
+            {
+                "hits": {
+                    "hits": [
+                        {"_id": "a", "_source": {"external_job_id": "a", "company": "amazon", "run_id": "r1", "title": "Role A"}},
+                        {"_id": "b", "_source": {"external_job_id": "b", "company": "amazon", "run_id": "r1", "title": "Role B"}},
+                    ]
+                }
+            },
+            {
+                "hits": {
+                    "hits": [
+                        {"_id": "b", "_source": {"external_job_id": "b", "company": "amazon", "run_id": "r1", "title": "Role B"}},
+                    ]
+                }
+            },
+        ]
+        with patch.object(m, "_query_embedding", return_value=[0.1, -0.2]), patch.object(m, "_es_client", return_value=es_client):
+            jobs, total, has_next = m._search_jobs("amazon", query="python", page=1, posted_within=None)
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(total, 2)
+        self.assertFalse(has_next)
+        bm25_body = es_client.search.call_args_list[0].kwargs["body"]
+        knn_body = es_client.search.call_args_list[1].kwargs["body"]
+        self.assertEqual(bm25_body["query"]["bool"]["must"][0]["multi_match"]["query"], "python")
+        self.assertEqual(knn_body["knn"]["query_vector"], [0.1, -0.2])
 
     def test_startup_and_shutdown_events(self) -> None:
         m = self.module
@@ -205,29 +344,28 @@ class BackendMainTest(unittest.TestCase):
         request = _make_request()
         payload = m.GetJobsRequest(company="amazon", pagination_index=1)
 
-        conn = _FakeConn(
-            [
-                _FakeResult(one={"total": 2}),
-                _FakeResult(
-                    many=[
-                        {
-                            "external_job_id": "job-1",
-                            "title": "Role",
-                            "details_url": "https://www.amazon.jobs/en/jobs/job-1",
-                            "apply_url": "https://www.amazon.jobs/applicant/jobs/job-1/apply",
-                            "city": "Seattle",
-                            "state": "WA",
-                            "country": "US",
-                            "posted_ts": m.datetime(2026, 1, 1, tzinfo=m.timezone.utc),
-                        }
-                    ]
-                ),
-            ]
-        )
-
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
-        ), patch.object(m, "_db_conn", return_value=conn):
+        ), patch.object(
+            m,
+            "_browse_jobs",
+            return_value=(
+                [
+                    m.JobMetadata(
+                        id="job-1",
+                        runId="run-1",
+                        name="Role",
+                        company="amazon",
+                        locations=[m.Location(city="Seattle", state="WA", country="US")],
+                        postedTs=1735689600,
+                        detailsUrl="https://www.amazon.jobs/en/jobs/job-1",
+                        applyUrl="https://www.amazon.jobs/applicant/jobs/job-1/apply",
+                    )
+                ],
+                2,
+                True,
+            ),
+        ):
             response = m.get_jobs(payload, request)
 
         self.assertEqual(response.status, 200)
@@ -238,18 +376,29 @@ class BackendMainTest(unittest.TestCase):
         self.assertTrue(response.has_next_page)
         self.assertEqual(len(response.jobs), 1)
         self.assertEqual(response.jobs[0].id, "job-1")
-        self.assertEqual(response.jobs[0].detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
-        self.assertEqual(response.jobs[0].applyUrl, "https://www.amazon.jobs/applicant/jobs/job-1/apply")
-
-    def test_get_jobs_handles_missing_total_row(self) -> None:
-        m = self.module
-        request = _make_request()
-        payload = m.GetJobsRequest(company="amazon", pagination_index=1)
-        conn = _FakeConn([_FakeResult(one=None), _FakeResult(many=[])])
+        self.assertEqual(response.jobs[0].runId, "run-1")
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
-        ), patch.object(m, "_db_conn", return_value=conn):
+        ), patch.object(
+            m,
+            "_search_jobs",
+            return_value=([], 0, False),
+        ) as search_jobs:
+            payload = m.GetJobsRequest(company="amazon", query="python", pagination_index=1)
+            m.get_jobs(payload, request)
+        search_jobs.assert_called_once_with("amazon", query="python", page=1, posted_within=None)
+        self.assertEqual(response.jobs[0].detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
+        self.assertEqual(response.jobs[0].applyUrl, "https://www.amazon.jobs/applicant/jobs/job-1/apply")
+
+    def test_get_jobs_search_and_all_companies(self) -> None:
+        m = self.module
+        request = _make_request()
+        payload = m.GetJobsRequest(company=None, query="python", pagination_index=1)
+
+        with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
+            m, "_search_jobs", return_value=([], 0, False)
+        ):
             response = m.get_jobs(payload, request)
 
         self.assertEqual(response.total_results, 0)
@@ -257,6 +406,17 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(response.total_pages, 1)
         self.assertFalse(response.has_next_page)
         self.assertEqual(response.jobs, [])
+
+    def test_get_jobs_handles_search_backend_failure(self) -> None:
+        m = self.module
+        request = _make_request()
+        payload = m.GetJobsRequest(company=None, pagination_index=1)
+        with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
+            m, "_browse_jobs", side_effect=requests.exceptions.RequestException("boom")
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                m.get_jobs(payload, request)
+        self.assertEqual(ctx.exception.status_code, 502)
 
     def test_get_companies(self) -> None:
         m = self.module
@@ -302,6 +462,30 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(response.jobDescription, "desc")
         self.assertEqual(response.skills, ["Python", "SQL"])
         self.assertEqual(response.detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
+
+    def test_get_job_details_uses_explicit_run_id(self) -> None:
+        m = self.module
+        request = _make_request()
+        payload = m.GetJobDetailsRequest(job_id="job-1", company="amazon", runId="run-2")
+        conn = _FakeConn(
+            [
+                _FakeResult(
+                    one={
+                        "is_missing_details": False,
+                        "details_url": "https://www.amazon.jobs/en/jobs/job-1",
+                        "skills": [],
+                        "posted_ts": None,
+                        "job_description_path": "job-details/run-2/amazon/job-1.txt",
+                    }
+                )
+            ]
+        )
+        with patch.object(m, "_validate_company_in_run", return_value="amazon") as validate_company, patch.object(
+            m, "_db_conn", return_value=conn
+        ), patch.object(m, "_load_job_description", return_value="desc"):
+            response = m.get_job_details(payload, request)
+        self.assertEqual(response.jobDescription, "desc")
+        validate_company.assert_called_once_with("run-2", "amazon")
 
     def test_get_job_details_success_without_optional_fields(self) -> None:
         m = self.module

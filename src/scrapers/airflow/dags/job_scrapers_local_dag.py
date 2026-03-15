@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from airflow.exceptions import AirflowFailException
@@ -14,12 +15,17 @@ from airflow.sdk import dag, get_current_context, task
 
 from scrapers.airflow.dags.job_scrapers_db import (
     copy_job_details_from_run,
+    fetch_publish_run_readiness,
+    fetch_search_index_requests,
     fetch_existing_job_detail_ids,
     fetch_job_skill_requests,
     fetch_latest_published_run_id,
     fetch_consistency_counts,
+    mark_publish_run_es_published,
+    mark_publish_run_succeeded,
     mark_missing_details,
     publish_jobs_catalog_pointer,
+    update_publish_run_es_status,
     update_publish_run_status,
     update_job_skills,
     upsert_companies,
@@ -31,6 +37,7 @@ from scrapers.airflow.clients.client_factory import build_client
 from common.request_policy import RequestPolicy
 from features.client import FeaturesClient
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
+from scrapers.common.elasticsearch import ElasticsearchClient
 from scrapers.common.company_scopes import resolve_scopes as resolve_proxy_scopes_for_companies
 from scrapers.common.env import require_env, require_env_bool, require_env_float, require_env_int
 from scrapers.common.minio import build_job_description_key, get_job_description, put_job_description
@@ -122,6 +129,11 @@ def job_scrapers_local_dag() -> None:
 
     db_url = require_env("JOBSEARCH_DB_URL")
     features_api_url = require_env("JOBSEARCH_FEATURES_API_URL")
+    es_url = require_env("JOBSEARCH_ES_URL")
+    es_alias = require_env("JOBSEARCH_ES_ALIAS")
+    es_index_prefix = require_env("JOBSEARCH_ES_INDEX_PREFIX")
+    es_embedding_dims = require_env_int("JOBSEARCH_ES_EMBEDDING_DIMS", minimum=1)
+    es_bulk_batch_size = require_env_int("JOBSEARCH_ES_BULK_BATCH_SIZE", minimum=1)
 
     def _build_proxy_management_client() -> ProxyManagementClient:
         return ProxyManagementClient(
@@ -146,6 +158,54 @@ def job_scrapers_local_dag() -> None:
             base_url=features_api_url,
             request_policy=_build_default_request_policy(),
         )
+
+    def _build_es_client() -> ElasticsearchClient:
+        return ElasticsearchClient(
+            base_url=es_url,
+            request_policy=_build_default_request_policy(),
+        )
+
+    def _build_es_index_name(run_id: str) -> str:
+        normalized_run_id = re.sub(r"[^a-z0-9._-]+", "-", str(run_id).strip().lower()).strip(".-")
+        if not normalized_run_id:
+            normalized_run_id = "run"
+        return f"{es_index_prefix}{normalized_run_id}"
+
+    def _search_index_mapping() -> dict[str, Any]:
+        return {
+            "properties": {
+                "run_id": {"type": "keyword"},
+                "company": {"type": "keyword"},
+                "external_job_id": {"type": "keyword"},
+                "title": {
+                    "type": "text",
+                    "fields": {
+                        "keyword": {"type": "keyword"},
+                    },
+                },
+                "details_url": {"type": "keyword"},
+                "apply_url": {"type": "keyword"},
+                "city": {"type": "keyword"},
+                "state": {"type": "keyword"},
+                "country": {"type": "keyword"},
+                "posted_ts": {"type": "date"},
+                "skills": {"type": "keyword"},
+                "job_description": {"type": "text"},
+                "job_description_embedding": {
+                    "type": "dense_vector",
+                    "dims": es_embedding_dims,
+                    "index": True,
+                    "similarity": "cosine",
+                },
+            }
+        }
+
+    def _to_posted_ts_value(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
 
     def _proxy_capacity_ready() -> bool:
         if not proxy_scopes:
@@ -649,7 +709,7 @@ def job_scrapers_local_dag() -> None:
         )
 
         failed = len(errors) > 0
-        status = "failed" if failed else "succeeded"
+        status = "failed" if failed else "in_progress"
         db_ready = not failed
         db_error_message = " | ".join(errors[:5]) if failed else None
 
@@ -673,17 +733,105 @@ def job_scrapers_local_dag() -> None:
             "error_count": len(errors),
         }
 
-    @task(task_id="publish_db_pointer")
-    def publish_db_pointer(run_info: dict[str, str], publish_state: dict[str, Any]) -> dict[str, Any]:
+    @task(task_id="stage_search_index")
+    def stage_search_index(run_info: dict[str, str], publish_state: dict[str, Any]) -> dict[str, Any]:
         run_id = str(run_info["run_id"])
-        if str(publish_state.get("status")) != "succeeded":
-            LOGGER.warning(
-                "publish_db_pointer skipped run_id=%s status=%s",
-                run_id,
-                publish_state.get("status"),
+        if not bool(publish_state.get("db_ready")):
+            LOGGER.warning("stage_search_index skipped run_id=%s db_ready=%s", run_id, publish_state.get("db_ready"))
+            return {"run_id": run_id, "es_ready": False, "indexed_count": 0}
+
+        index_name = _build_es_index_name(run_id)
+        es_client = _build_es_client()
+        try:
+            es_client.create_index(index_name=index_name, mapping=_search_index_mapping())
+            rows = fetch_search_index_requests(db_url, run_id=run_id)
+            docs: list[dict[str, Any]] = []
+            for row in rows:
+                job_description_path = str(row.get("job_description_path") or "").strip()
+                if not job_description_path:
+                    continue
+                job_description = get_job_description(key=job_description_path)
+                skills_raw = row.get("skills")
+                skills = skills_raw if isinstance(skills_raw, list) else []
+                embedding_raw = row.get("job_description_embedding")
+                embedding = embedding_raw if isinstance(embedding_raw, list) else []
+                docs.append(
+                    {
+                        "_id": f"{run_id}:{row['company']}:{row['external_job_id']}",
+                        "_source": {
+                            "run_id": run_id,
+                            "company": str(row["company"]),
+                            "external_job_id": str(row["external_job_id"]),
+                            "title": row.get("title"),
+                            "details_url": row.get("details_url"),
+                            "apply_url": row.get("apply_url"),
+                            "city": row.get("city"),
+                            "state": row.get("state"),
+                            "country": row.get("country"),
+                            "posted_ts": _to_posted_ts_value(row.get("posted_ts")),
+                            "skills": [str(skill).strip() for skill in skills if str(skill).strip()],
+                            "job_description": str(job_description),
+                            "job_description_embedding": [float(value) for value in embedding],
+                        },
+                    }
+                )
+            for start in range(0, len(docs), es_bulk_batch_size):
+                batch = docs[start : start + es_bulk_batch_size]
+                is_last_batch = start + es_bulk_batch_size >= len(docs)
+                bulk_out = es_client.bulk_index(index_name=index_name, docs=batch, refresh=is_last_batch)
+                if bool(bulk_out.get("errors")):
+                    raise ValueError(f"Elasticsearch bulk index reported errors for run {run_id}")
+            indexed_count = es_client.count(index_name=index_name)
+            if indexed_count != len(docs):
+                raise ValueError(
+                    f"Elasticsearch indexed count mismatch for run {run_id}: expected={len(docs)} actual={indexed_count}"
+                )
+            update_publish_run_es_status(
+                db_url,
+                run_id=run_id,
+                es_ready=True,
+                es_error_message=None,
             )
-            return {"published": False, "run_id": run_id}
-        publish_jobs_catalog_pointer(db_url, run_id=run_id)
+            return {"run_id": run_id, "es_ready": True, "indexed_count": indexed_count, "index_name": index_name}
+        except Exception as exc:
+            update_publish_run_es_status(
+                db_url,
+                run_id=run_id,
+                es_ready=False,
+                es_error_message=f"{type(exc).__name__}: {exc}",
+                status="failed",
+            )
+            raise
+
+    @task(task_id="publish_catalog")
+    def publish_catalog(
+        run_info: dict[str, str],
+        publish_state: dict[str, Any],
+        search_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        run_id = str(run_info["run_id"])
+        readiness = fetch_publish_run_readiness(db_url, run_id=run_id)
+        if not bool(readiness.get("db_ready")) or not bool(readiness.get("es_ready")):
+            raise AirflowFailException(
+                f"Run {run_id} is not publishable: db_ready={readiness.get('db_ready')} es_ready={readiness.get('es_ready')}"
+            )
+        index_name = str(search_state.get("index_name") or "").strip()
+        if not index_name:
+            raise AirflowFailException(f"Run {run_id} search index name missing")
+        try:
+            _build_es_client().swap_alias(alias=es_alias, index_name=index_name)
+            mark_publish_run_es_published(db_url, run_id=run_id)
+            publish_jobs_catalog_pointer(db_url, run_id=run_id)
+            mark_publish_run_succeeded(db_url, run_id=run_id)
+        except Exception as exc:
+            update_publish_run_es_status(
+                db_url,
+                run_id=run_id,
+                es_ready=False,
+                es_error_message=f"{type(exc).__name__}: {exc}",
+                status="failed",
+            )
+            raise
 
         return {"published": True, "run_id": run_id}
 
@@ -718,7 +866,9 @@ def job_scrapers_local_dag() -> None:
     [detail_results, skill_results] >> verification_state
     publish_state = update_publish_run(run_info, first_pages, page_results, detail_results)
     verification_state >> publish_state
-    publish_db_pointer(run_info, publish_state)
+    search_state = stage_search_index(run_info, publish_state)
+    publish_state >> search_state
+    publish_catalog(run_info, publish_state, search_state)
 
 
 job_scrapers_local_dag()

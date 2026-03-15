@@ -24,6 +24,53 @@ services:
       timeout: 5s
       retries: 5
 
+  elasticsearch:
+    image: elasticsearch:9.3.1
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSL http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  kibana:
+    image: kibana:9.3.1
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED: "false"
+    ports:
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsSL http://localhost:5601/api/status >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  kibana-bootstrap:
+    image: curlimages/curl:latest
+    depends_on:
+      kibana:
+        condition: service_healthy
+    restart: "no"
+    volumes:
+      - ..:/opt/jobsearch
+    environment:
+      KIBANA_URL: http://kibana:5601
+      KIBANA_DATA_VIEW_ID: jobsearch-jobs-catalog
+      KIBANA_DATA_VIEW_NAME: Jobs Catalog
+      KIBANA_DATA_VIEW_TITLE: jobs_catalog*
+    entrypoint: ["/bin/sh", "/opt/jobsearch/src/scripts/bootstrap_kibana.sh"]
+
   minio:
     image: minio/minio:latest
     environment:
@@ -83,6 +130,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
       features:
@@ -118,6 +167,8 @@ services:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      elasticsearch:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
@@ -156,6 +207,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
       features:
@@ -190,6 +243,8 @@ services:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      elasticsearch:
         condition: service_healthy
       minio-create-bucket:
         condition: service_completed_successfully
@@ -254,6 +309,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      features:
+        condition: service_healthy
       minio:
         condition: service_healthy
       minio-create-bucket:
@@ -268,6 +327,13 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: jobsearch-xcom
       MINIO_SECURE: "false"
+      JOBSEARCH_FEATURES_API_URL: http://features:8010
+      JOBSEARCH_ES_URL: http://elasticsearch:9200
+      JOBSEARCH_ES_ALIAS: jobs_catalog
+      JOBSEARCH_ES_QUERY_CANDIDATES: 100
+      JOBSEARCH_ES_KNN_CANDIDATES: 100
+      JOBSEARCH_ES_KNN_NUM_CANDIDATES: 200
+      JOBSEARCH_ES_RRF_K: 60
     ports:
       - "8000:8000"
 
@@ -303,3 +369,4 @@ volumes:
   airflow_logs:
   airflow_plugins:
   minio_data:
+  elasticsearch_data:

@@ -7,7 +7,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 _TASK_REGISTRY: dict[str, "_FakeTask"] = {}
 _SENSOR_CALLABLES: dict[str, object] = {}
@@ -107,8 +107,11 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             "scrapers.airflow.clients.common",
             "common",
             "common.request_policy",
+            "features",
+            "features.client",
             "scrapers.proxy",
             "scrapers.proxy.proxy_management_client",
+            "scrapers.common.elasticsearch",
             "scrapers.airflow.dags.job_scrapers_local_dag",
         ]
         cls._saved_modules = {name: sys.modules.get(name) for name in cls._module_names}
@@ -134,9 +137,13 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         common_mod = types.ModuleType("common")
         common_mod.__path__ = []  # package marker
         clients_request_policy_mod = types.ModuleType("common.request_policy")
+        features_mod = types.ModuleType("features")
+        features_mod.__path__ = []  # package marker
+        features_client_mod = types.ModuleType("features.client")
         proxy_mod = types.ModuleType("scrapers.proxy")
         proxy_mod.__path__ = []  # package marker
         proxy_management_client_mod = types.ModuleType("scrapers.proxy.proxy_management_client")
+        elasticsearch_mod = types.ModuleType("scrapers.common.elasticsearch")
 
         airflow_decorators_mod.dag = _fake_dag_decorator
         airflow_decorators_mod.task = _fake_task_decorator
@@ -175,11 +182,23 @@ class JobScrapersLocalDagTest(unittest.TestCase):
 
         clients_request_policy_mod.RequestPolicy = _RequestPolicy
 
+        class _FeaturesClient:
+            def __init__(self, *args, **kwargs) -> None:
+                _ = (args, kwargs)
+
+        features_client_mod.FeaturesClient = _FeaturesClient
+
         class _ProxyManagementClient:
             def __init__(self, *args, **kwargs) -> None:
                 _ = (args, kwargs)
 
         proxy_management_client_mod.ProxyManagementClient = _ProxyManagementClient
+
+        class _ElasticsearchClient:
+            def __init__(self, *args, **kwargs) -> None:
+                _ = (args, kwargs)
+
+        elasticsearch_mod.ElasticsearchClient = _ElasticsearchClient
 
         sys.modules["airflow"] = airflow_mod
         sys.modules["airflow.decorators"] = airflow_decorators_mod
@@ -199,8 +218,11 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         sys.modules["scrapers.airflow.clients.common"] = clients_common_mod
         sys.modules["common"] = common_mod
         sys.modules["common.request_policy"] = clients_request_policy_mod
+        sys.modules["features"] = features_mod
+        sys.modules["features.client"] = features_client_mod
         sys.modules["scrapers.proxy"] = proxy_mod
         sys.modules["scrapers.proxy.proxy_management_client"] = proxy_management_client_mod
+        sys.modules["scrapers.common.elasticsearch"] = elasticsearch_mod
         sys.modules.pop("scrapers.airflow.dags.job_scrapers_local_dag", None)
 
         cls._saved_env = dict(os.environ)
@@ -226,6 +248,11 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 "JOBSEARCH_AIRFLOW_PROXY_SENSOR_SOFT_FAIL": "false",
                 "JOBSEARCH_DB_URL": "postgresql://db",
                 "JOBSEARCH_FEATURES_API_URL": "http://features:8010",
+                "JOBSEARCH_ES_URL": "http://elasticsearch:9200",
+                "JOBSEARCH_ES_ALIAS": "jobs_catalog",
+                "JOBSEARCH_ES_INDEX_PREFIX": "jobs_catalog__",
+                "JOBSEARCH_ES_EMBEDDING_DIMS": "384",
+                "JOBSEARCH_ES_BULK_BATCH_SIZE": "100",
             }
         )
         _TASK_REGISTRY.clear()
@@ -295,7 +322,8 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             "jobs_get_details",
             "verify_db_consistency",
             "update_publish_run",
-            "publish_db_pointer",
+            "stage_search_index",
+            "publish_catalog",
         ):
             self.assertIn(task_id, self.tasks)
         self.assertIn("wait_for_proxy_capacity", self.sensor_callables)
@@ -629,22 +657,191 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         run_info = {"run_id": "r1"}
         with patch.object(self.mod, "update_publish_run_status") as update_status:
             out = fn(run_info, [{"success": True}], [{"success": True}], [{"success": True}])
-        self.assertEqual(out["status"], "succeeded")
+        self.assertEqual(out["status"], "in_progress")
+        self.assertTrue(out["db_ready"])
         update_status.assert_called_once()
 
         with patch.object(self.mod, "update_publish_run_status"):
             with self.assertRaises(_FakeAirflowFailException):
                 fn(run_info, [{"success": False, "error": "x"}], [], [])
 
-    def test_task_publish_db_pointer(self) -> None:
-        fn = self.tasks["publish_db_pointer"].fn
+    def test_task_stage_search_index(self) -> None:
+        fn = self.tasks["stage_search_index"].fn
+        run_info = {"run_id": "scheduled__2026-03-15T00:00:00+00:00"}
+        with patch.object(self.mod, "fetch_search_index_requests", return_value=[]), patch.object(
+            self.mod, "update_publish_run_es_status"
+        ) as update_status:
+            es_client = SimpleNamespace(
+                create_index=lambda **kwargs: None,
+                bulk_index=lambda **kwargs: {"errors": False},
+                count=lambda index_name: 0,
+            )
+            with patch.object(self.mod, "ElasticsearchClient", return_value=es_client):
+                out_skip = fn(run_info, {"db_ready": False})
+                out_ok = fn(run_info, {"db_ready": True})
+        self.assertFalse(out_skip["es_ready"])
+        self.assertTrue(out_ok["es_ready"])
+        self.assertEqual(out_ok["index_name"], "jobs_catalog__scheduled__2026-03-15t00-00-00-00-00")
+        update_status.assert_called_once_with(
+            "postgresql://db",
+            run_id="scheduled__2026-03-15T00:00:00+00:00",
+            es_ready=True,
+            es_error_message=None,
+        )
+
+        with patch.object(self.mod, "fetch_search_index_requests", return_value=[]), patch.object(
+            self.mod, "update_publish_run_es_status"
+        ), patch.object(
+            self.mod, "ElasticsearchClient", return_value=es_client
+        ):
+            out_fallback = fn({"run_id": "!!!"}, {"db_ready": True})
+        self.assertEqual(out_fallback["index_name"], "jobs_catalog__run")
+
+    def test_task_stage_search_index_covers_doc_build_and_error_paths(self) -> None:
+        fn = self.tasks["stage_search_index"].fn
         run_info = {"run_id": "r1"}
-        with patch.object(self.mod, "publish_jobs_catalog_pointer") as publish:
-            out_skip = fn(run_info, {"status": "failed"})
-            out_ok = fn(run_info, {"status": "succeeded"})
-        self.assertFalse(out_skip["published"])
-        self.assertTrue(out_ok["published"])
-        publish.assert_called_once_with("postgresql://db", run_id="r1")
+        rows = [
+            {
+                "company": "amazon",
+                "external_job_id": "j1",
+                "title": "Role",
+                "details_url": "https://details",
+                "apply_url": "https://apply",
+                "city": "Seattle",
+                "state": "WA",
+                "country": "US",
+                "posted_ts": datetime(2026, 1, 2, 0, 0, 0),
+                "skills": [" Python ", ""],
+                "job_description_embedding": [1, 2],
+                "job_description_path": "job-details/r1/amazon/j1.txt",
+            },
+            {
+                "company": "amazon",
+                "external_job_id": "j2",
+                "title": "Skip",
+                "details_url": "https://details-2",
+                "apply_url": "https://apply-2",
+                "city": "Austin",
+                "state": "TX",
+                "country": "US",
+                "posted_ts": None,
+                "skills": "bad",
+                "job_description_embedding": "bad",
+                "job_description_path": "job-details/r1/amazon/j2.txt",
+            },
+            {
+                "company": "amazon",
+                "external_job_id": "j3",
+                "title": "Skipped",
+                "details_url": None,
+                "apply_url": None,
+                "city": None,
+                "state": None,
+                "country": None,
+                "posted_ts": None,
+                "skills": [],
+                "job_description_embedding": [],
+                "job_description_path": "   ",
+            },
+        ]
+        es_client = Mock()
+        es_client.create_index.return_value = None
+        es_client.bulk_index.return_value = {"errors": False}
+        es_client.count.return_value = 2
+        with patch.object(self.mod, "fetch_search_index_requests", return_value=rows), patch.object(
+            self.mod, "get_job_description", return_value="Description"
+        ), patch.object(
+            self.mod, "update_publish_run_es_status"
+        ) as update_status, patch.object(
+            self.mod, "ElasticsearchClient", return_value=es_client
+        ):
+            out = fn(run_info, {"db_ready": True})
+        self.assertTrue(out["es_ready"])
+        bulk_call = es_client.bulk_index.call_args.kwargs["docs"]
+        self.assertEqual(len(bulk_call), 2)
+        self.assertEqual(bulk_call[0]["_source"]["skills"], ["Python"])
+        self.assertEqual(bulk_call[0]["_source"]["job_description_embedding"], [1.0, 2.0])
+        self.assertEqual(bulk_call[0]["_source"]["posted_ts"], "2026-01-02T00:00:00+00:00")
+        self.assertEqual(bulk_call[1]["_source"]["skills"], [])
+        self.assertEqual(bulk_call[1]["_source"]["job_description_embedding"], [])
+        self.assertIsNone(bulk_call[1]["_source"]["posted_ts"])
+        update_status.assert_called_once()
+
+        es_client_bulk_error = Mock()
+        es_client_bulk_error.create_index.return_value = None
+        es_client_bulk_error.bulk_index.return_value = {"errors": True}
+        with patch.object(self.mod, "fetch_search_index_requests", return_value=rows[:1]), patch.object(
+            self.mod, "get_job_description", return_value="Description"
+        ), patch.object(self.mod, "update_publish_run_es_status") as update_status, patch.object(
+            self.mod, "ElasticsearchClient", return_value=es_client_bulk_error
+        ):
+            with self.assertRaises(ValueError):
+                fn(run_info, {"db_ready": True})
+        self.assertEqual(update_status.call_args.kwargs["status"], "failed")
+
+        es_client_count_error = Mock()
+        es_client_count_error.create_index.return_value = None
+        es_client_count_error.bulk_index.return_value = {"errors": False}
+        es_client_count_error.count.return_value = 0
+        with patch.object(self.mod, "fetch_search_index_requests", return_value=rows[:1]), patch.object(
+            self.mod, "get_job_description", return_value="Description"
+        ), patch.object(self.mod, "update_publish_run_es_status") as update_status, patch.object(
+            self.mod, "ElasticsearchClient", return_value=es_client_count_error
+        ):
+            with self.assertRaises(ValueError):
+                fn(run_info, {"db_ready": True})
+        self.assertEqual(update_status.call_args.kwargs["status"], "failed")
+
+    def test_task_publish_catalog(self) -> None:
+        fn = self.tasks["publish_catalog"].fn
+        run_info = {"run_id": "r1"}
+        search_state = {"index_name": "jobs_catalog__r1"}
+        es_client = SimpleNamespace(swap_alias=lambda **kwargs: None)
+        with patch.object(
+            self.mod,
+            "fetch_publish_run_readiness",
+            return_value={"db_ready": False, "es_ready": True},
+        ):
+            with self.assertRaises(_FakeAirflowFailException):
+                fn(run_info, {"db_ready": False}, search_state)
+
+        with patch.object(
+            self.mod,
+            "fetch_publish_run_readiness",
+            return_value={"db_ready": True, "es_ready": True},
+        ), patch.object(self.mod, "ElasticsearchClient", return_value=es_client), patch.object(
+            self.mod, "mark_publish_run_es_published"
+        ) as mark_es_published, patch.object(
+            self.mod, "publish_jobs_catalog_pointer"
+        ) as publish_pointer, patch.object(
+            self.mod, "mark_publish_run_succeeded"
+        ) as mark_succeeded:
+            out = fn(run_info, {"db_ready": True}, search_state)
+        self.assertTrue(out["published"])
+        mark_es_published.assert_called_once_with("postgresql://db", run_id="r1")
+        publish_pointer.assert_called_once_with("postgresql://db", run_id="r1")
+        mark_succeeded.assert_called_once_with("postgresql://db", run_id="r1")
+
+        with patch.object(
+            self.mod,
+            "fetch_publish_run_readiness",
+            return_value={"db_ready": True, "es_ready": True},
+        ):
+            with self.assertRaises(_FakeAirflowFailException):
+                fn(run_info, {"db_ready": True}, {"index_name": "  "})
+
+        failing_es_client = Mock()
+        failing_es_client.swap_alias.side_effect = RuntimeError("boom")
+        with patch.object(
+            self.mod,
+            "fetch_publish_run_readiness",
+            return_value={"db_ready": True, "es_ready": True},
+        ), patch.object(self.mod, "ElasticsearchClient", return_value=failing_es_client), patch.object(
+            self.mod, "update_publish_run_es_status"
+        ) as update_status:
+            with self.assertRaises(RuntimeError):
+                fn(run_info, {"db_ready": True}, search_state)
+        self.assertEqual(update_status.call_args.kwargs["status"], "failed")
 
 
 if __name__ == "__main__":

@@ -648,6 +648,181 @@ def update_publish_run_status(
         engine.dispose()
 
 
+def update_publish_run_es_status(
+    db_url: str,
+    *,
+    run_id: str,
+    es_ready: bool,
+    es_error_message: str | None,
+    status: str | None = None,
+) -> None:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            if status is None:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE publish_runs
+                        SET es_ready = :es_ready,
+                            es_error_message = :es_error_message,
+                            updated_at = now()
+                        WHERE run_id = :run_id
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "es_ready": es_ready,
+                        "es_error_message": es_error_message,
+                    },
+                )
+            else:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE publish_runs
+                        SET status = :status,
+                            es_ready = :es_ready,
+                            es_error_message = :es_error_message,
+                            updated_at = now()
+                        WHERE run_id = :run_id
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "status": status,
+                        "es_ready": es_ready,
+                        "es_error_message": es_error_message,
+                    },
+                )
+    finally:
+        engine.dispose()
+
+
+def fetch_publish_run_readiness(
+    db_url: str,
+    *,
+    run_id: str,
+) -> dict[str, Any]:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT status, db_ready, es_ready
+                    FROM publish_runs
+                    WHERE run_id = :run_id
+                    LIMIT 1
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings()
+            first_row = next(iter(row), None)
+            if first_row is None:
+                raise ValueError(f"Publish run '{run_id}' not found")
+            return {
+                "status": str(first_row.get("status") or ""),
+                "db_ready": bool(first_row.get("db_ready")),
+                "es_ready": bool(first_row.get("es_ready")),
+            }
+    finally:
+        engine.dispose()
+
+
+def fetch_search_index_requests(
+    db_url: str,
+    *,
+    run_id: str,
+) -> list[dict[str, Any]]:
+    requests_out: list[dict[str, Any]] = []
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT
+                      j.run_id,
+                      j.company,
+                      j.external_job_id,
+                      j.title,
+                      j.details_url,
+                      j.apply_url,
+                      j.city,
+                      j.state,
+                      j.country,
+                      j.skills,
+                      j.job_description_embedding,
+                      j.posted_ts,
+                      d.job_description_path
+                    FROM jobs j
+                    JOIN job_details d
+                      ON d.run_id = j.run_id
+                     AND d.company = j.company
+                     AND d.external_job_id = j.external_job_id
+                    WHERE j.run_id = :run_id
+                      AND j.is_missing_details = FALSE
+                      AND d.job_description_path IS NOT NULL
+                      AND btrim(d.job_description_path) <> ''
+                    ORDER BY j.company, j.external_job_id
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings()
+            for row in rows:
+                requests_out.append(dict(row))
+    finally:
+        engine.dispose()
+    return requests_out
+
+
+def mark_publish_run_succeeded(
+    db_url: str,
+    *,
+    run_id: str,
+) -> None:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE publish_runs
+                    SET status = 'succeeded',
+                        updated_at = now()
+                    WHERE run_id = :run_id
+                    """
+                ),
+                {"run_id": run_id},
+            )
+    finally:
+        engine.dispose()
+
+
+def mark_publish_run_es_published(
+    db_url: str,
+    *,
+    run_id: str,
+) -> None:
+    engine = _db_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE publish_runs
+                    SET es_published_at = now(),
+                        updated_at = now()
+                    WHERE run_id = :run_id
+                    """
+                ),
+                {"run_id": run_id},
+            )
+    finally:
+        engine.dispose()
+
+
 def publish_jobs_catalog_pointer(db_url: str, *, run_id: str) -> None:
     engine = _db_engine(db_url)
     try:
