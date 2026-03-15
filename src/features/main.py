@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import lru_cache
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -15,6 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_TECHNICAL_PATH = "/opt/jobsearch/src/features/data/technical_skills.csv"
 _DEFAULT_KEYWORD_PATH = "/opt/jobsearch/src/features/data/tech_keywords.csv"
+_DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def _technical_filepath() -> str:
@@ -29,6 +31,10 @@ def _spacy_model() -> str:
     return os.getenv("JOBSEARCH_FEATURES_SPACY_MODEL", DEFAULT_SPACY_MODEL).strip() or DEFAULT_SPACY_MODEL
 
 
+def _embedding_model_name() -> str:
+    return os.getenv("JOBSEARCH_FEATURES_EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL).strip() or _DEFAULT_EMBEDDING_MODEL
+
+
 @lru_cache(maxsize=1)
 def _skill_extractor() -> SkillExtractor:
     return SkillExtractor(
@@ -36,6 +42,30 @@ def _skill_extractor() -> SkillExtractor:
         keyword_filepath=_keyword_filepath(),
         spacy_model=_spacy_model(),
     )
+
+
+@lru_cache(maxsize=1)
+def _text_embedding_class() -> Any:
+    from fastembed import TextEmbedding
+
+    return TextEmbedding
+
+
+@lru_cache(maxsize=1)
+def _embedding_model() -> Any:
+    return _text_embedding_class()(model_name=_embedding_model_name())
+
+
+def _extract_embedding(text: str) -> list[float]:
+    embeddings = list(_embedding_model().embed([text]))
+    if not embeddings:
+        return []
+    vector = embeddings[0]
+    if hasattr(vector, "tolist"):
+        raw_values = vector.tolist()
+    else:
+        raw_values = list(vector)
+    return [float(value) for value in raw_values]
 
 
 app = FastAPI(
@@ -48,11 +78,13 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event() -> None:
     extractor = _skill_extractor()
+    _embedding_model()
     _LOGGER.info(
-        "[features] startup technical_path=%s keyword_path=%s skill_count=%s",
+        "[features] startup technical_path=%s keyword_path=%s skill_count=%s embedding_model=%s",
         extractor.technical_filepath,
         extractor.keyword_filepath,
         len(extractor.skills),
+        _embedding_model_name(),
     )
 
 
@@ -62,4 +94,5 @@ def get_job_skills(payload: ExtractJobSkillsRequest) -> ExtractJobSkillsResponse
         status=200,
         error=None,
         skills=_skill_extractor().extract(payload.text),
+        embedding=_extract_embedding(payload.text),
     )

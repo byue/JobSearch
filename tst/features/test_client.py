@@ -151,12 +151,14 @@ class FeaturesClientTest(unittest.TestCase):
                 "status": 200,
                 "error": None,
                 "skills": ["Python"],
+                "embedding": [0.1, -0.2],
             }
         )
 
         out = client.get_job_skills(text="  Need Python  ")
 
         self.assertEqual(out["skills"], ["Python"])
+        self.assertEqual(out["embedding"], [0.1, -0.2])
         client._session.request.assert_called_once_with(
             method="POST",
             url="http://localhost:8010/job_skills",
@@ -218,12 +220,12 @@ class FeaturesClientTest(unittest.TestCase):
         client._session.request.side_effect = [
             requests_mod.exceptions.RequestException("boom-1"),
             requests_mod.exceptions.RequestException("boom-2"),
-            _FakeResponse(payload={"skills": []}),
+            _FakeResponse(payload={"skills": [], "embedding": []}),
         ]
 
         out = client.get_job_skills(text="Need Python")
 
-        self.assertEqual(out, {"skills": []})
+        self.assertEqual(out, {"skills": [], "embedding": []})
         self.assertEqual(client._session.request.call_count, 3)
 
     def test_get_job_skills_retries_http_error_until_max_tries(self) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+import types
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +23,7 @@ class FeaturesMainHelpersTest(unittest.TestCase):
             self.assertEqual(main_mod._technical_filepath(), main_mod._DEFAULT_TECHNICAL_PATH)
             self.assertEqual(main_mod._keyword_filepath(), main_mod._DEFAULT_KEYWORD_PATH)
             self.assertEqual(main_mod._spacy_model(), main_mod.DEFAULT_SPACY_MODEL)
+            self.assertEqual(main_mod._embedding_model_name(), main_mod._DEFAULT_EMBEDDING_MODEL)
 
         with patch.dict(
             os.environ,
@@ -28,29 +31,82 @@ class FeaturesMainHelpersTest(unittest.TestCase):
                 "JOBSEARCH_FEATURES_TECHNICAL_PATH": " /tmp/technical.csv ",
                 "JOBSEARCH_FEATURES_KEYWORD_PATH": " /tmp/keywords.csv ",
                 "JOBSEARCH_FEATURES_SPACY_MODEL": " custom-model ",
+                "JOBSEARCH_FEATURES_EMBEDDING_MODEL": " custom-embedding ",
             },
             clear=False,
         ):
             self.assertEqual(main_mod._technical_filepath(), "/tmp/technical.csv")
             self.assertEqual(main_mod._keyword_filepath(), "/tmp/keywords.csv")
             self.assertEqual(main_mod._spacy_model(), "custom-model")
+            self.assertEqual(main_mod._embedding_model_name(), "custom-embedding")
 
     def test_skill_extractor_is_cached(self) -> None:
         main_mod._skill_extractor.cache_clear()
+        main_mod._embedding_model.cache_clear()
         extractor = object()
+        embedding_model = object()
         with patch.object(main_mod, "SkillExtractor", return_value=extractor) as factory, patch.dict(
             os.environ,
             {},
             clear=False,
-        ):
+        ), patch.object(main_mod, "_text_embedding_class", return_value=lambda **kwargs: embedding_model) as embedding_factory:
             self.assertIs(main_mod._skill_extractor(), extractor)
             self.assertIs(main_mod._skill_extractor(), extractor)
+            self.assertIs(main_mod._embedding_model(), embedding_model)
+            self.assertIs(main_mod._embedding_model(), embedding_model)
         factory.assert_called_once_with(
             technical_filepath=main_mod._DEFAULT_TECHNICAL_PATH,
             keyword_filepath=main_mod._DEFAULT_KEYWORD_PATH,
             spacy_model=main_mod.DEFAULT_SPACY_MODEL,
         )
+        embedding_factory.assert_called_once_with()
         main_mod._skill_extractor.cache_clear()
+        main_mod._embedding_model.cache_clear()
+
+    def test_text_embedding_class_imports_fastembed(self) -> None:
+        main_mod._text_embedding_class.cache_clear()
+        saved_fastembed = sys.modules.get("fastembed")
+        fastembed_mod = types.ModuleType("fastembed")
+
+        class _FakeTextEmbedding:
+            pass
+
+        fastembed_mod.TextEmbedding = _FakeTextEmbedding
+        sys.modules["fastembed"] = fastembed_mod
+        try:
+            self.assertIs(main_mod._text_embedding_class(), _FakeTextEmbedding)
+        finally:
+            main_mod._text_embedding_class.cache_clear()
+            if saved_fastembed is None:
+                sys.modules.pop("fastembed", None)
+            else:
+                sys.modules["fastembed"] = saved_fastembed
+
+    def test_extract_embedding_returns_empty_when_model_returns_no_vectors(self) -> None:
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [],
+            },
+        )()
+        with patch.object(main_mod, "_embedding_model", return_value=fake_embedding_model):
+            self.assertEqual(main_mod._extract_embedding("Need Python"), [])
+
+    def test_extract_embedding_uses_tolist_when_available(self) -> None:
+        class _FakeVector:
+            def tolist(self) -> list[float]:
+                return [0.1, 2, -0.3]
+
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [_FakeVector()],
+            },
+        )()
+        with patch.object(main_mod, "_embedding_model", return_value=fake_embedding_model):
+            self.assertEqual(main_mod._extract_embedding("Need Python"), [0.1, 2.0, -0.3])
 
 
 @unittest.skipIf(TestClient is None or app is None, "fastapi test dependencies are not installed")
@@ -66,8 +122,17 @@ class FeaturesBackendTest(unittest.TestCase):
                 "extract": lambda self, text: ["Python"],
             },
         )()
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [[0.1, -0.2]],
+            },
+        )()
 
-        with patch("features.main._skill_extractor", return_value=fake_extractor):
+        with patch("features.main._skill_extractor", return_value=fake_extractor), patch(
+            "features.main._embedding_model", return_value=fake_embedding_model
+        ):
             with TestClient(app) as client:
                 response = client.post("/job_skills", json={"text": "Need Python"})
 
@@ -78,6 +143,7 @@ class FeaturesBackendTest(unittest.TestCase):
                 "status": 200,
                 "error": None,
                 "skills": ["Python"],
+                "embedding": [0.1, -0.2],
             },
         )
 
@@ -92,7 +158,16 @@ class FeaturesBackendTest(unittest.TestCase):
                 "extract": lambda self, text: [],
             },
         )()
-        with patch("features.main._skill_extractor", return_value=fake_extractor):
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [[]],
+            },
+        )()
+        with patch("features.main._skill_extractor", return_value=fake_extractor), patch(
+            "features.main._embedding_model", return_value=fake_embedding_model
+        ):
             with TestClient(app) as client:
                 response = client.post("/job_skills", json={"text": ""})
         self.assertEqual(response.status_code, 422)

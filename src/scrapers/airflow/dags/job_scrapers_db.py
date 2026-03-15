@@ -332,8 +332,10 @@ def update_job_skills(
     company: str,
     external_job_id: str,
     skills: list[str],
+    job_description_embedding: list[float],
 ) -> None:
     normalized_skills = [str(skill).strip() for skill in skills if str(skill).strip()]
+    normalized_embedding = [float(value) for value in job_description_embedding]
     engine = _db_engine(db_url)
     try:
         with engine.begin() as conn:
@@ -342,6 +344,7 @@ def update_job_skills(
                     """
                     UPDATE jobs
                     SET skills = CAST(:skills AS JSONB),
+                        job_description_embedding = CAST(:job_description_embedding AS JSONB),
                         updated_at = now()
                     WHERE run_id = :run_id
                       AND company = :company
@@ -353,6 +356,7 @@ def update_job_skills(
                     "company": company,
                     "external_job_id": external_job_id,
                     "skills": json.dumps(normalized_skills),
+                    "job_description_embedding": json.dumps(normalized_embedding),
                 },
             )
     finally:
@@ -503,11 +507,12 @@ def fetch_consistency_counts(
     *,
     run_id: str,
     companies: list[str],
-) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
     jobs_count_by_company: dict[str, int] = {company: 0 for company in companies}
     missing_details_by_company: dict[str, int] = {company: 0 for company in companies}
     details_count_by_company: dict[str, int] = {company: 0 for company in companies}
     missing_description_by_company: dict[str, int] = {company: 0 for company in companies}
+    missing_embedding_by_company: dict[str, int] = {company: 0 for company in companies}
 
     engine = _db_engine(db_url)
     try:
@@ -574,6 +579,30 @@ def fetch_consistency_counts(
                 company = str(row["company"])
                 if company in missing_description_by_company:
                     missing_description_by_company[company] = int(row["cnt"])
+
+            missing_embedding_rows = conn.execute(
+                text(
+                    """
+                    SELECT d.company, COUNT(*) AS cnt
+                    FROM job_details d
+                    JOIN jobs j
+                      ON j.run_id = d.run_id
+                     AND j.company = d.company
+                     AND j.external_job_id = d.external_job_id
+                    WHERE d.run_id = :run_id
+                      AND j.is_missing_details = FALSE
+                      AND d.job_description_path IS NOT NULL
+                      AND btrim(d.job_description_path) <> ''
+                      AND COALESCE(jsonb_array_length(j.job_description_embedding), 0) = 0
+                    GROUP BY d.company
+                    """
+                ),
+                {"run_id": run_id},
+            ).mappings()
+            for row in missing_embedding_rows:
+                company = str(row["company"])
+                if company in missing_embedding_by_company:
+                    missing_embedding_by_company[company] = int(row["cnt"])
     finally:
         engine.dispose()
 
@@ -582,6 +611,7 @@ def fetch_consistency_counts(
         missing_details_by_company,
         details_count_by_company,
         missing_description_by_company,
+        missing_embedding_by_company,
     )
 
 

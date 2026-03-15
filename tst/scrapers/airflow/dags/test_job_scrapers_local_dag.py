@@ -497,7 +497,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
 
     def test_task_extract_job_skills(self) -> None:
         fn = self.tasks["jobs_extract_skills"].fn
-        fake_features_client = SimpleNamespace(get_job_skills=lambda text: {"skills": ["Python", "SQL"]})
+        fake_features_client = SimpleNamespace(get_job_skills=lambda text: {"skills": ["Python", "SQL"], "embedding": [0.1, -0.2]})
         with patch.object(self.mod, "get_job_description", return_value="Need Python and SQL"), patch.object(
             self.mod, "FeaturesClient", return_value=fake_features_client
         ), patch.object(self.mod, "update_job_skills") as update_job_skills:
@@ -513,6 +513,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             company="amazon",
             external_job_id="j1",
             skills=["Python", "SQL"],
+            job_description_embedding=[0.1, -0.2],
         )
         self.assertTrue(out["success"])
         self.assertEqual(out["skills_written"], 2)
@@ -534,6 +535,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             company="amazon",
             external_job_id="j1",
             skills=[],
+            job_description_embedding=[],
         )
         self.assertTrue(out["success"])
         self.assertEqual(out["skills_written"], 0)
@@ -554,6 +556,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 {"amazon": 0, "google": 0},
                 {"amazon": 1, "google": 1},
                 {"amazon": 0, "google": 0},
+                {"amazon": 0, "google": 0},
             ),
         ):
             out = fn(run_info, page_results, detail_requests)
@@ -566,6 +569,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 {"amazon": 0, "google": 1},
                 {"amazon": 0, "google": 0},
                 {"amazon": 1, "google": 1},
+                {"amazon": 0, "google": 0},
                 {"amazon": 0, "google": 0},
             ),
         ):
@@ -585,6 +589,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 {"amazon": 0, "google": 0},
                 {"amazon": 0, "google": 1},
                 {"amazon": 1, "google": 0},
+                {"amazon": 0, "google": 1},
             ),
         ):
             with self.assertRaises(_FakeAirflowFailException):

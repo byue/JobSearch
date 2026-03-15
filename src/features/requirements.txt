@@ -2,3 +2,4 @@ fastapi>=0.135.1,<1
 uvicorn[standard]>=0.41,<1
 pydantic>=2.12.5,<3
 spacy>=3.8.11,<4
+fastembed>=0.7.3,<1
