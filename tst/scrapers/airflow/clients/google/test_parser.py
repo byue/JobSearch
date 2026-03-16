@@ -23,7 +23,13 @@ class GoogleParserTest(unittest.TestCase):
 
     def test_parse_job_metadata_and_details(self) -> None:
         row = ["id1", "Engineer", "https://apply", None, None, None, None, None, None, ["Seattle, WA, USA"], None, None, 1700000000]
-        metadata = parser.parse_job_metadata(row=row, page=1, base_url="https://google.com", results_path="/about/careers/jobs/results/")
+        metadata = parser.parse_job_metadata(
+            row=row,
+            page=1,
+            base_url="https://google.com",
+            results_path="/about/careers/jobs/results/",
+            locations=[parser.Location(city="Seattle", state="Washington", country="United States")],
+        )
         self.assertEqual(metadata.id, "id1")
         self.assertEqual(metadata.company, "google")
         self.assertIsNone(metadata.jobCategory)
@@ -48,6 +54,7 @@ class GoogleParserTest(unittest.TestCase):
             page=1,
             base_url="https://google.com",
             results_path="/about/careers/jobs/results/",
+            locations=[parser.Location(city="Seattle", state="Washington", country="United States")],
         )
         self.assertEqual(software_metadata.jobCategory, "software_engineer")
 
@@ -88,8 +95,6 @@ class GoogleParserTest(unittest.TestCase):
         self.assertEqual(parser.extract_rows("AF_initDataCallback({key: 'ds:1', hash: 'x', data:[\"bad\"], sideChannel: {}});")[0], [])
         self.assertEqual(parser.extract_rows("AF_initDataCallback({key: 'ds:1', hash: 'x', data:[[[]],\"x\",\"y\",\"z\"], sideChannel: {}});")[1:], (None, None))
         self.assertIn("?page=2", parser.build_public_url(job_id="1", name="A B", page=2, base_url="https://x", results_path="/r/"))
-        self.assertEqual(parser.to_locations(["OnlyCountry"])[0].country, "OnlyCountry")
-        self.assertEqual(parser.to_locations(["State, Country"])[0].state, "State")
         self.assertFalse(parser.has_next_page(page=1, jobs_count=5, total_results=None, page_size=10))
 
     def test_qualification_and_list_formatting_helpers(self) -> None:

@@ -68,6 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
     get_job_skills_parser = subparsers.add_parser("get-job-skills", help="POST /job_skills")
     get_job_skills_parser.add_argument("--text", required=True, help="Input text to extract skills from")
 
+    normalize_locations_parser = subparsers.add_parser("normalize-locations", help="POST /normalize_locations")
+    normalize_locations_parser.add_argument(
+        "--location",
+        dest="locations",
+        action="append",
+        required=True,
+        help="Raw location string. Pass multiple times for multiple inputs.",
+    )
+
     return parser
 
 
@@ -93,6 +102,8 @@ def main() -> int:
     try:
         if args.command == "get-job-skills":
             result = client.get_job_skills(text=args.text)
+        elif args.command == "normalize-locations":
+            result = client.normalize_locations(locations=list(args.locations))
         else:  # pragma: no cover - argparse enforces valid subcommands
             parser.error(f"Unsupported command: {args.command}")
             return 2

@@ -46,7 +46,7 @@ def dedupe(values: list[str]) -> list[str]:
     return out
 
 
-def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetadata:
+def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str, locations: list[Location] | None = None) -> JobMetadata:
     job_id = to_optional_str(payload.get("id_icims")) or to_optional_str(payload.get("id"))
     if not job_id:
         raise ValueError("Unexpected Amazon API payload for job metadata: missing required field 'id_icims'")
@@ -70,7 +70,7 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetad
         name=name,
         company="amazon",
         jobCategory=job_type,
-        locations=extract_locations(payload),
+        locations=list(locations or []),
         postedTs=posted_ts,
         applyUrl=apply_url,
         detailsUrl=details_url,
@@ -145,63 +145,24 @@ def parse_posted_ts(value: Any) -> int | None:
     return None
 
 
-def extract_locations(payload: Mapping[str, Any]) -> list[Location]:
-    out: list[Location] = []
+def extract_location_strings(payload: Mapping[str, Any]) -> list[str]:
+    out: list[str] = []
     raw_locations = payload.get("locations")
 
     if isinstance(raw_locations, list):
         for item in raw_locations:
-            parsed_item: Mapping[str, Any] | None = None
-            if isinstance(item, Mapping):
-                parsed_item = item
-            elif isinstance(item, str):
-                try:
-                    maybe_mapping = json.loads(item)
-                except json.JSONDecodeError:
-                    maybe_mapping = None
-                if isinstance(maybe_mapping, Mapping):
-                    parsed_item = maybe_mapping
-
-            if not isinstance(parsed_item, Mapping):
+            if not isinstance(item, str):
                 continue
-
-            city = to_optional_str(parsed_item.get("city")) or ""
-            state = (
-                to_optional_str(parsed_item.get("normalizedStateName"))
-                or to_optional_str(parsed_item.get("state"))
-                or to_optional_str(parsed_item.get("region"))
-                or ""
-            )
-            country = (
-                to_optional_str(parsed_item.get("countryIso3a"))
-                or to_optional_str(parsed_item.get("normalizedCountryCode"))
-                or to_optional_str(parsed_item.get("normalizedCountryName"))
-                or ""
-            )
-            out.append(Location(city=city, state=state, country=country))
-
-    if out:
-        return out
-
-    city = to_optional_str(payload.get("city")) or ""
-    state = to_optional_str(payload.get("state")) or ""
-    country = to_optional_str(payload.get("country_code")) or ""
-    fallback_location = to_optional_str(payload.get("location"))
-
-    if not any((city, state, country)) and fallback_location:
-        parts = [part.strip() for part in fallback_location.split(",") if part.strip()]
-        if len(parts) == 1:
-            country = parts[0]
-        elif len(parts) == 2:
-            country, city = parts
-        elif len(parts) >= 3:
-            city = parts[0]
-            state = parts[1]
-            country = ", ".join(parts[2:])
-
-    if any((city, state, country)):
-        return [Location(city=city, state=state, country=country)]
-    return []
+            try:
+                parsed = json.loads(item)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(parsed, Mapping):
+                continue
+            normalized = to_optional_str(parsed.get("normalizedLocation"))
+            if normalized:
+                out.append(normalized)
+    return out
 
 
 def clean_html_fragment(value: str) -> str:

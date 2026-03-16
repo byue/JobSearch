@@ -68,7 +68,13 @@ def extract_hydration_payload(*, html_payload: str, context: str) -> Mapping[str
     return require_mapping(parsed_payload, context=context)
 
 
-def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str, locale: str) -> JobMetadata:
+def parse_job_metadata(
+    *,
+    payload: Mapping[str, Any],
+    base_url: str,
+    locale: str,
+    locations: list[Location] | None = None,
+) -> JobMetadata:
     job_id = to_optional_str(payload.get("positionId")) or to_optional_str(payload.get("reqId"))
     if not job_id:
         raise ValueError("Unexpected Apple payload for job metadata: missing required field 'positionId'")
@@ -81,7 +87,7 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str, locale: str
         name=name,
         company="apple",
         jobCategory=infer_job_category_from_title(title=name),
-        locations=extract_locations(payload.get("locations")),
+        locations=list(locations or []),
         postedTs=parse_posted_ts(payload.get("postDateInGMT")) or parse_posting_date(payload.get("postingDate")),
         detailsUrl=build_details_url(base_url=base_url, locale=locale, job_id=job_id, transformed_title=transformed_title),
         applyUrl=f"{base_url}/app/{locale}/apply/{urllib.parse.quote(job_id)}",
@@ -117,11 +123,11 @@ def build_details_url(*, base_url: str, locale: str, job_id: str, transformed_ti
     return f"{base_url}/{locale}/details/{encoded_job_id}/{encoded_title}"
 
 
-def extract_locations(value: Any) -> list[Location]:
+def extract_location_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
 
-    out: list[Location] = []
+    out: list[str] = []
     for item in value:
         if not isinstance(item, Mapping):
             continue
@@ -131,8 +137,9 @@ def extract_locations(value: Any) -> list[Location]:
         fallback_name = to_optional_str(item.get("name"))
         if not country and fallback_name:
             country = fallback_name
-
-        out.append(Location(city=city, state=state, country=country))
+        parts = [part for part in (city, state, country) if part]
+        if parts:
+            out.append(", ".join(parts))
     return out
 
 

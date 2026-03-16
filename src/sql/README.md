@@ -46,6 +46,17 @@ Specific table/limit:
 ./src/sql/peek_db.sh --table job_details --limit 2 --truncate-chars 120
 ```
 
+## Current Jobs Table Shape
+
+`jobs` now stores:
+- `job_type`: normalized taxonomy value such as `software_engineer` or `data_scientist`
+- `locations`: JSONB array of normalized location objects:
+  - `city`
+  - `region`
+  - `country`
+
+The old top-level `city`, `state`, and `country` columns are no longer used.
+
 Equivalent via Make:
 ```bash
 make db-list

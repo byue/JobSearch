@@ -4,7 +4,7 @@ JobSearch is a job discovery platform focused on two outcomes:
 - fresher job data than aggregator-style feeds
 - better match quality by ranking jobs against a candidate profile/resume
 
-This repo contains the scraping pipeline and web stack that power that product.
+This repo contains the scraping pipeline, feature service, and web stack that power that product.
 
 ## Background
 Most job seekers rely on broad aggregators that can lag behind company career sites and provide generic ranking. That creates three recurring problems:
@@ -36,9 +36,11 @@ JobSearch exists to deliver:
 - **Search without resume**: keyword/filter discovery on latest published catalog.
 - **Browse fallback**: show recent/popular jobs when user has no resume and no query.
 - **Job detail view**: fetch full normalized detail for a selected job from the active published snapshot.
+- **Location filtering**: browse/search by `country`, `region`, and `city` using Elasticsearch-derived filter values.
 
 ## Repository Layout
 - `src/scrapers/`: Airflow DAG, scraper clients, proxy subsystem.
+- `src/features/`: FastAPI feature service for skills, embeddings, and location normalization.
 - `src/web/`: FastAPI backend + React frontend.
 - `src/sql/`: DB schema and initialization scripts.
 - `tst/`: unit tests.
@@ -50,6 +52,7 @@ flowchart TB
     U[User Browser]
     FE[Frontend<br/>React + Nginx]
     BE[Backend API<br/>FastAPI]
+    FS[Features API<br/>FastAPI]
 
     AF_UI[Airflow Webserver]
     AF_SCH[Airflow Scheduler]
@@ -75,6 +78,7 @@ flowchart TB
         U
         FE
         BE
+        FS
     end
 
     subgraph Proxy
@@ -95,6 +99,7 @@ flowchart TB
 
     U --> FE
     FE --> BE
+    BE --> FS
     BE -->|query| DB
     DB -->|job data via API| BE
     BE -.->|search/index queries| ES
@@ -120,9 +125,10 @@ flowchart TB
 ```
 
 1. **Proxy layer**: `proxy-producer` continuously fills per-scope proxy queues; `proxy-api` leases/releases/blocks IPs.
-2. **Scraper layer**: Airflow runs scheduled company scrapers that lease proxies and accumulate `jobs` + `job_details` into a new run version.
+2. **Scraper layer**: Airflow runs scheduled company scrapers that lease proxies, normalize locations through the features service, and accumulate `jobs` + `job_details` into a new run version.
 3. **Publish gate**: data is not marked published while the run is in progress; publish happens only after consistency checks succeed.
-4. **Web layer**: backend reads only the published snapshot pointer (`jobs_catalog`) and exposes that stable snapshot to frontend/customers.
+4. **Feature layer**: shared extraction endpoints provide job skills, query embeddings, and location normalization.
+5. **Web layer**: backend reads only the published snapshot pointer (`jobs_catalog`), queries Elasticsearch for search/filter UX, and exposes that stable snapshot to frontend/customers.
 
 ## Current vs Target
 - `Current in repo`: versioned DB snapshot pipeline (`publish_runs` + `publication_pointers`), proxy rotation, web API + UI.
@@ -151,6 +157,11 @@ Start all local services:
 ```bash
 make up
 ```
+
+Default local service URLs:
+- frontend: `http://localhost:5173`
+- backend: `http://localhost:8000`
+- features API: `http://localhost:8010`
 
 Inspect services/logs:
 
@@ -204,7 +215,14 @@ Full test suite:
 make test
 ```
 
+Feature-service smoke test:
+
+```bash
+make test-location-normalization ARGS='--location "Seattle, WA, USA" --location "London, UK"'
+```
+
 ## Key Documentation
+- Features service: `src/features/README.md`
 - Scrapers overview: `src/scrapers/README.md`
 - Airflow pipeline: `src/scrapers/airflow/README.md`
 - Airflow clients: `src/scrapers/airflow/clients/README.md`

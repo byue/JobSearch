@@ -106,6 +106,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             "scrapers.airflow.clients.client_factory",
             "scrapers.airflow.clients.common",
             "common",
+            "common.job_taxonomy",
             "common.request_policy",
             "features",
             "features.client",
@@ -136,6 +137,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         clients_common_mod.__path__ = []  # package marker
         common_mod = types.ModuleType("common")
         common_mod.__path__ = []  # package marker
+        common_job_taxonomy_mod = types.ModuleType("common.job_taxonomy")
         clients_request_policy_mod = types.ModuleType("common.request_policy")
         features_mod = types.ModuleType("features")
         features_mod.__path__ = []  # package marker
@@ -181,6 +183,12 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 )
 
         clients_request_policy_mod.RequestPolicy = _RequestPolicy
+        common_job_taxonomy_mod.ALLOWED_JOB_CATEGORIES = {
+            "software_engineer",
+            "machine_learning_engineer",
+            "data_scientist",
+            "manager",
+        }
 
         class _FeaturesClient:
             def __init__(self, *args, **kwargs) -> None:
@@ -217,6 +225,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         sys.modules["scrapers.airflow.clients.client_factory"] = clients_client_factory_mod
         sys.modules["scrapers.airflow.clients.common"] = clients_common_mod
         sys.modules["common"] = common_mod
+        sys.modules["common.job_taxonomy"] = common_job_taxonomy_mod
         sys.modules["common.request_policy"] = clients_request_policy_mod
         sys.modules["features"] = features_mod
         sys.modules["features.client"] = features_client_mod
@@ -407,6 +416,10 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         upsert_jobs.assert_called_once()
         self.assertEqual(
             upsert_jobs.call_args.kwargs["rows"][0]["job_type"], "software_engineer"
+        )
+        self.assertEqual(
+            upsert_jobs.call_args.kwargs["rows"][0]["locations"],
+            [{"city": "Seattle", "region": "WA", "country": "USA"}],
         )
 
     def test_task_get_jobs_page_filters_apple_non_target_roles(self) -> None:
@@ -840,9 +853,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 "title": "Role",
                 "details_url": "https://details",
                 "apply_url": "https://apply",
-                "city": "Seattle",
-                "state": "WA",
-                "country": "US",
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
                 "posted_ts": datetime(2026, 1, 2, 0, 0, 0),
                 "skills": [" Python ", ""],
                 "job_description_embedding": [1, 2],
@@ -855,9 +866,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 "title": "Skip",
                 "details_url": "https://details-2",
                 "apply_url": "https://apply-2",
-                "city": "Austin",
-                "state": "TX",
-                "country": "US",
+                "locations": [{"city": "Austin", "region": "Texas", "country": "United States"}],
                 "posted_ts": None,
                 "skills": "bad",
                 "job_description_embedding": "bad",
@@ -870,9 +879,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
                 "title": "Skipped",
                 "details_url": None,
                 "apply_url": None,
-                "city": None,
-                "state": None,
-                "country": None,
+                "locations": [],
                 "posted_ts": None,
                 "skills": [],
                 "job_description_embedding": [],
@@ -898,6 +905,10 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         self.assertEqual(bulk_call[0]["_source"]["skills"], ["Python"])
         self.assertEqual(bulk_call[0]["_source"]["job_description_embedding"], [1.0, 2.0])
         self.assertEqual(bulk_call[0]["_source"]["posted_ts"], "2026-01-02T00:00:00+00:00")
+        self.assertEqual(
+            bulk_call[0]["_source"]["locations"],
+            [{"city": "Seattle", "region": "Washington", "country": "United States"}],
+        )
         self.assertEqual(bulk_call[1]["_source"]["job_type"], "machine_learning_engineer")
         self.assertEqual(bulk_call[1]["_source"]["skills"], [])
         self.assertEqual(bulk_call[1]["_source"]["job_description_embedding"], [])

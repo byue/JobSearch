@@ -10,6 +10,8 @@ from common.request_policy import RequestPolicy
 
 
 class FeaturesClient:
+    _NORMALIZE_LOCATIONS_BATCH_SIZE = 100
+
     def __init__(
         self,
         *,
@@ -79,3 +81,27 @@ class FeaturesClient:
         if not isinstance(payload, dict):
             raise ValueError("Invalid query_embedding payload")
         return payload
+
+    def normalize_locations(self, *, locations: list[str]) -> dict[str, Any]:
+        normalized_locations = [str(location).strip() for location in locations if str(location).strip()]
+        if not normalized_locations:
+            raise ValueError("locations must contain at least one non-empty string")
+        merged_locations: list[Any] = []
+        for start in range(0, len(normalized_locations), self._NORMALIZE_LOCATIONS_BATCH_SIZE):
+            chunk = normalized_locations[start : start + self._NORMALIZE_LOCATIONS_BATCH_SIZE]
+            payload = self._request(
+                method="POST",
+                path="/normalize_locations",
+                payload={"locations": chunk},
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid normalize_locations payload")
+            raw_locations = payload.get("locations")
+            if not isinstance(raw_locations, list):
+                raise ValueError("Invalid normalize_locations payload")
+            merged_locations.extend(raw_locations)
+        return {
+            "status": 200,
+            "error": None,
+            "locations": merged_locations,
+        }

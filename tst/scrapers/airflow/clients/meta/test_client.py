@@ -6,15 +6,17 @@ import requests
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.meta.client import MetaJobsClient, _dedupe, _require_mapping, _to_int, _to_optional_str
-from web.backend.schemas import JobDetailsSchema, PayDetails, PayRange
+from web.backend.schemas import JobDetailsSchema, Location, PayDetails, PayRange
 
 
 class MetaClientTest(unittest.TestCase):
     def _client(self) -> MetaJobsClient:
+        self.features_client = Mock()
         return MetaJobsClient(
             base_url="https://www.metacareers.com",
             default_request_policy=RequestPolicy(timeout_seconds=1.0, max_retries=1),
             proxy_management_client=Mock(),
+            features_client=self.features_client,
         )
 
     def test_scalar_helpers(self) -> None:
@@ -41,9 +43,13 @@ class MetaClientTest(unittest.TestCase):
             "_fetch_search_results",
             return_value={"all_jobs": [{"id": "1", "title": "Eng", "locations": ["Seattle, WA, USA"]}]},
         ):
+            self.features_client.normalize_locations.return_value = {
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}]
+            }
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
+            self.features_client.normalize_locations.assert_called_once_with(locations=["Seattle, WA, USA"])
         with self.assertRaises(ValueError):
             client.get_jobs(page=0)
 
@@ -116,18 +122,31 @@ class MetaClientTest(unittest.TestCase):
     def test_parse_job_metadata_and_details(self) -> None:
         client = self._client()
         metadata = client._parse_job_metadata(
-            {"id": "1", "title": "Eng", "locations": ["Seattle, WA, USA"], "posted_date": "Mar 1, 2026"}
+            {"id": "1", "title": "Eng", "locations": ["Seattle, WA, USA"], "posted_date": "Mar 1, 2026"},
+            locations=[Location(city="Seattle", state="Washington", country="United States")],
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "meta")
         self.assertIsNone(metadata.postedTs)
         self.assertIsNone(metadata.jobCategory)
         classified_metadata = client._parse_job_metadata(
-            {"id": "2", "title": "Software Engineer, Product", "locations": ["Seattle, WA, USA"]}
+            {"id": "2", "title": "Software Engineer, Product", "locations": ["Seattle, WA, USA"]},
+            locations=[Location(city="Seattle", state="Washington", country="United States")],
         )
         self.assertEqual(classified_metadata.jobCategory, "software_engineer")
         with self.assertRaises(ValueError):
             client._parse_job_metadata({"id": " "})
+
+    def test_get_jobs_validates_normalize_locations_payload(self) -> None:
+        client = self._client()
+        with patch.object(
+            client,
+            "_fetch_search_results",
+            return_value={"all_jobs": [{"id": "1", "title": "Eng", "locations": ["Seattle, WA, USA"]}]},
+        ):
+            self.features_client.normalize_locations.return_value = {"locations": "bad"}
+            with self.assertRaises(ValueError):
+                client.get_jobs(page=1)
 
         details = client._parse_job_details(
             payload={
@@ -149,6 +168,20 @@ class MetaClientTest(unittest.TestCase):
             "Role\n\nDescription\nHello\n\nResponsibilities\nResp\n\nMinimum Qualifications\nMin\n\nPreferred Qualifications\nPref\n\nAbout Meta\nAbout Meta body\n\nCalifornia note\n\n$100,000/year to $120,000/year + bonus + equity + benefits\n\nIndividual compensation is determined by skills, qualifications, experience, and location. Compensation details listed in this posting reflect the base hourly rate, monthly rate, or annual salary only, and do not include bonus, equity or sales incentives, if applicable. In addition to base compensation, Meta offers benefits. Learn more about benefits at Meta.",
         )
         self.assertIsNone(details.postedTs)
+
+    def test_normalize_locations_edge_cases(self) -> None:
+        client = self._client()
+        self.assertEqual(client._normalize_locations([]), [])
+        client.features_client = None
+        self.assertEqual(client._normalize_locations([["Seattle, WA, USA"]]), [[]])
+        client.features_client = self.features_client
+        self.assertEqual(client._normalize_locations([[]]), [[]])
+        self.features_client.normalize_locations.return_value = {"locations": ["bad"]}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Seattle, WA, USA"]])
+        self.features_client.normalize_locations.return_value = {"locations": []}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Seattle, WA, USA"]])
 
     def test_graphql_query_and_bootstrap(self) -> None:
         client = self._client()

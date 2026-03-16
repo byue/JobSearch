@@ -66,7 +66,7 @@ button {
 }
 
 .hero {
-  min-height: 88vh;
+  min-height: auto;
   border-bottom: 1px solid var(--line);
 }
 
@@ -98,7 +98,7 @@ button {
   text-align: center;
   width: min(100%, 1120px);
   margin: 0 auto;
-  padding: 124px 0 58px;
+  padding: 96px 0 56px;
 }
 
 .hero h1 {
@@ -121,7 +121,8 @@ button {
 
 .search-panel {
   width: min(100%, 980px);
-  margin-top: 52px;
+  margin-top: 36px;
+  text-align: left;
 }
 
 .search-shell {
@@ -170,30 +171,40 @@ button {
   outline: none;
 }
 
+.search-status {
+  margin: 10px 4px 0;
+  color: #8ec5ff;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+}
+
 .subfilters {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
+  align-items: flex-start;
   gap: 16px;
   flex-wrap: wrap;
-  margin-top: 22px;
+  margin-top: 14px;
+  width: 100%;
 }
 
 .company-select-field {
   width: 204px;
+  flex: 0 0 204px;
+}
+
+.location-filter-field {
+  position: relative;
+  width: 320px;
+  flex: 0 0 320px;
+  z-index: 2;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-
-.field span {
-  color: var(--text-soft);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  gap: 0;
+  text-align: left;
 }
 
 .field input,
@@ -202,17 +213,68 @@ button {
   min-height: 42px;
   padding: 0 14px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 10px;
   background: transparent;
   color: var(--text);
 }
 
 .field select {
-  appearance: none;
   padding-inline: 18px;
   background: var(--bg-panel-soft);
   color: var(--text);
-  border-radius: 999px;
+  border-radius: 10px;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  text-align: left;
+}
+
+.location-filter-trigger {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg-panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.location-filter-trigger:hover {
+  border-color: var(--line-hover);
+}
+
+.location-filter-trigger span {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.location-filter-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 12;
+  display: grid;
+  gap: 12px;
+  width: min(320px, 82vw);
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow);
+}
+
+.location-panel-field {
+  width: 100%;
+}
+
+.location-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
 .field select option {
@@ -307,11 +369,38 @@ button {
 
 .results-card {
   margin-top: 18px;
+  width: min(100%, 980px);
+  margin-inline: auto;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--bg-panel);
   box-shadow: var(--shadow);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: min(62vh, 760px);
+}
+
+.results-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.results-panel {
+  width: min(1320px, 96vw);
+  max-height: 88vh;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .results-header {
@@ -347,9 +436,16 @@ button {
   color: var(--danger);
 }
 
+.hero-alert {
+  width: min(100%, 980px);
+  margin-inline: auto;
+}
+
 .results-list {
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .result-item {
@@ -576,7 +672,7 @@ button {
   }
 
   .hero-center {
-    padding: 72px 0 42px;
+    padding: 60px 0 54px;
   }
 
   .search-shell,
@@ -595,7 +691,7 @@ button {
   }
 
   .hero-center {
-    padding: 54px 0 34px;
+    padding: 44px 0 44px;
   }
 
   .hero h1 {

@@ -108,6 +108,16 @@ class FeaturesMainHelpersTest(unittest.TestCase):
         with patch.object(main_mod, "_embedding_model", return_value=fake_embedding_model):
             self.assertEqual(main_mod._extract_embedding("Need Python"), [0.1, 2.0, -0.3])
 
+    def test_normalize_location_helper(self) -> None:
+        city, state, country = main_mod.normalize_location("Seattle, WA, USA")
+        self.assertEqual((city, state, country), ("Seattle", "Washington", "United States"))
+
+        city, state, country = main_mod.normalize_location("London, UK")
+        self.assertEqual((city, state, country), ("London", None, "United Kingdom"))
+
+        city, state, country = main_mod.normalize_location("Remote")
+        self.assertEqual((city, state, country), (None, None, None))
+
 
 @unittest.skipIf(TestClient is None or app is None, "fastapi test dependencies are not installed")
 class FeaturesBackendTest(unittest.TestCase):
@@ -204,6 +214,46 @@ class FeaturesBackendTest(unittest.TestCase):
                 "error": None,
                 "embedding": [0.1, -0.2],
             },
+        )
+
+    def test_normalize_locations_endpoint(self) -> None:
+        fake_extractor = type(
+            "FakeExtractor",
+            (),
+            {
+                "technical_filepath": "/tmp/technical_skills.csv",
+                "keyword_filepath": "/tmp/tech_keywords.csv",
+                "skills": set(),
+                "extract": lambda self, text: [],
+            },
+        )()
+        fake_embedding_model = type(
+            "FakeEmbeddingModel",
+            (),
+            {
+                "embed": lambda self, texts: [[]],
+            },
+        )()
+        with patch("features.main._skill_extractor", return_value=fake_extractor), patch(
+            "features.main._embedding_model", return_value=fake_embedding_model
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/normalize_locations",
+                    json={"locations": ["Seattle, WA, USA", "London, UK", "Remote"]},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], 200)
+        self.assertEqual(body["error"], None)
+        self.assertEqual(
+            body["locations"],
+            [
+                {"city": "Seattle", "region": "Washington", "country": "United States"},
+                {"city": "London", "region": None, "country": "United Kingdom"},
+                {"city": None, "region": None, "country": None},
+            ],
         )
 
 

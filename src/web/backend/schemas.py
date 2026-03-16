@@ -26,6 +26,9 @@ class GetJobsRequest(BaseModel):
     query: str | None = None
     posted_within: str | None = None
     job_type: str | None = None
+    country: str | None = None
+    region: str | None = None
+    city: str | None = None
     pagination_index: int = Field(default=1, ge=1)
 
 
@@ -103,6 +106,18 @@ class GetCompaniesResponse(BaseModel):
     status: int | str | None = 200
     error: Any = None
     companies: list[str] = Field(default_factory=list)
+
+
+class GetLocationFiltersResponse(BaseModel):
+    """Response payload for `/get_location_filters`."""
+
+    model_config = ConfigDict(extra="allow")
+
+    status: int | str | None = 200
+    error: Any = None
+    countries: list[str] = Field(default_factory=list)
+    regions: list[str] = Field(default_factory=list)
+    cities: list[str] = Field(default_factory=list)
 
 
 class GetJobDetailsRequest(BaseModel):

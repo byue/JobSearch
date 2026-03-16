@@ -29,7 +29,7 @@ class WebApiCliTest(unittest.TestCase):
         request_mock.assert_called_once()
         self.assertIn('"companies"', stdout.getvalue())
 
-    def test_main_get_jobs_and_details_success(self) -> None:
+    def test_main_get_jobs_location_filters_and_details_success(self) -> None:
         response = Mock()
         response.raise_for_status.return_value = None
         response.json.return_value = {"status": 200}
@@ -37,7 +37,46 @@ class WebApiCliTest(unittest.TestCase):
         with patch("requests.request", return_value=response) as request_mock:
             with patch(
                 "sys.argv",
-                ["web_api_cli.py", "--api-url", "http://x", "get-jobs", "--company", "amazon", "--page", "2"],
+                [
+                    "web_api_cli.py",
+                    "--api-url",
+                    "http://x",
+                    "get-jobs",
+                    "--company",
+                    "amazon",
+                    "--page",
+                    "2",
+                    "--query",
+                    "python",
+                    "--posted-within",
+                    "7d",
+                    "--job-type",
+                    "software_engineer",
+                    "--country",
+                    "United States",
+                    "--region",
+                    "Washington",
+                    "--city",
+                    "Seattle",
+                ],
+            ):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(web_api_cli.main(), 0)
+
+            with patch(
+                "sys.argv",
+                [
+                    "web_api_cli.py",
+                    "get-location-filters",
+                    "--company",
+                    "amazon",
+                    "--job-type",
+                    "software_engineer",
+                    "--country",
+                    "United States",
+                    "--region",
+                    "Washington",
+                ],
             ):
                 with redirect_stdout(io.StringIO()):
                     self.assertEqual(web_api_cli.main(), 0)
@@ -49,7 +88,20 @@ class WebApiCliTest(unittest.TestCase):
                 with redirect_stdout(io.StringIO()):
                     self.assertEqual(web_api_cli.main(), 0)
 
-        self.assertEqual(request_mock.call_count, 2)
+        self.assertEqual(request_mock.call_count, 3)
+        get_jobs_call = request_mock.call_args_list[0]
+        self.assertEqual(get_jobs_call.kwargs["json"]["query"], "python")
+        self.assertEqual(get_jobs_call.kwargs["json"]["posted_within"], "7d")
+        self.assertEqual(get_jobs_call.kwargs["json"]["job_type"], "software_engineer")
+        self.assertEqual(get_jobs_call.kwargs["json"]["country"], "United States")
+        self.assertEqual(get_jobs_call.kwargs["json"]["region"], "Washington")
+        self.assertEqual(get_jobs_call.kwargs["json"]["city"], "Seattle")
+
+        location_filters_call = request_mock.call_args_list[1]
+        self.assertEqual(location_filters_call.kwargs["method"], "GET")
+        self.assertIn("/get_location_filters?", location_filters_call.kwargs["url"])
+        self.assertIn("country=United+States", location_filters_call.kwargs["url"])
+        self.assertIn("region=Washington", location_filters_call.kwargs["url"])
 
     def test_main_http_error(self) -> None:
         response = Mock()

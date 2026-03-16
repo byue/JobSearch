@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
+from features.client import FeaturesClient
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.html_text import extract_text
 from common.job_taxonomy import infer_job_category_from_title
@@ -153,6 +154,7 @@ class NetflixJobsClient(JobsClient):
         default_request_policy: RequestPolicy,
         endpoint_request_policies: Mapping[str, RequestPolicy] | None = None,
         proxy_management_client: "ProxyManagementClient",
+        features_client: FeaturesClient | None = None,
     ) -> None:
         super().__init__(
             default_request_policy=default_request_policy,
@@ -161,6 +163,7 @@ class NetflixJobsClient(JobsClient):
         self.base_url = base_url.rstrip("/")
         self.domain = domain.strip() or self.DOMAIN
         self.proxy_management_client = proxy_management_client
+        self.features_client = features_client
 
     def get_jobs(
         self,
@@ -188,13 +191,19 @@ class NetflixJobsClient(JobsClient):
             )
 
         jobs: list[JobMetadata] = []
+        raw_location_batches: list[list[str]] = []
         for index, item in enumerate(positions_raw):
             if not isinstance(item, Mapping):
                 raise ValueError(
                     f"Unexpected Netflix API payload for positions[{index}]: "
                     f"expected object, got {type(item).__name__}"
                 )
-            jobs.append(self._parse_job_metadata(item))
+            raw_location_batches.append(self._extract_location_strings(item))
+
+        normalized_locations_by_job = self._normalize_locations(raw_location_batches)
+
+        for item, locations in zip(positions_raw, normalized_locations_by_job):
+            jobs.append(self._parse_job_metadata(item, locations=locations))
 
         total_results = _to_int(payload.get("count"))
         if isinstance(total_results, int):
@@ -343,7 +352,7 @@ class NetflixJobsClient(JobsClient):
         parsed_payload = _require_mapping(payload, context=self.API_JOBS_PATH)
         return dict(parsed_payload)
 
-    def _parse_job_metadata(self, payload: Mapping[str, Any]) -> JobMetadata:
+    def _parse_job_metadata(self, payload: Mapping[str, Any], locations: list[Location] | None = None) -> JobMetadata:
         job_id = self._to_job_id(payload.get("id"))
         if not job_id:
             raise ValueError("Unexpected Netflix API payload for job metadata: missing required field 'id'")
@@ -358,7 +367,7 @@ class NetflixJobsClient(JobsClient):
             name=name,
             company="netflix",
             jobCategory=infer_job_category_from_title(title=name),
-            locations=self._extract_locations(payload),
+            locations=list(locations or []),
             postedTs=posted_ts,
             detailsUrl=details_url,
             applyUrl=f"{details_url}#apply" if details_url else None,
@@ -385,7 +394,7 @@ class NetflixJobsClient(JobsClient):
         return f"{self.base_url}{self.CAREERS_PATH}"
 
     @classmethod
-    def _extract_locations(cls, payload: Mapping[str, Any]) -> list[Location]:
+    def _extract_location_strings(cls, payload: Mapping[str, Any]) -> list[str]:
         raw_locations = payload.get("locations")
         standardized_locations: list[str] = []
 
@@ -399,22 +408,44 @@ class NetflixJobsClient(JobsClient):
             if fallback:
                 standardized_locations.append(fallback)
 
-        out: list[Location] = []
-        for location in standardized_locations:
-            parts = [part.strip() for part in location.split(",") if part.strip()]
-            city = ""
-            state = ""
-            country = ""
-            if len(parts) == 1:
-                country = parts[0]
-            elif len(parts) == 2:
-                state = parts[0]
-                country = parts[1]
-            elif len(parts) >= 3:
-                city = parts[0]
-                state = parts[1]
-                country = ", ".join(parts[2:])
-            out.append(Location(city=city, state=state, country=country))
+        return standardized_locations
+
+    def _normalize_locations(self, raw_location_batches: list[list[str]]) -> list[list[Location]]:
+        if not raw_location_batches:
+            return []
+        if self.features_client is None:
+            return [[] for _ in raw_location_batches]
+
+        flattened = [value for batch in raw_location_batches for value in batch]
+        if not flattened:
+            return [[] for _ in raw_location_batches]
+
+        payload = self.features_client.normalize_locations(locations=flattened)
+        raw_locations = payload.get("locations")
+        if not isinstance(raw_locations, list):
+            raise ValueError("Invalid normalize_locations payload")
+
+        normalized_flat: list[Location] = []
+        for item in raw_locations:
+            if not isinstance(item, Mapping):
+                raise ValueError("Invalid normalized location item")
+            normalized_flat.append(
+                Location(
+                    city=str(item.get("city", "") or "").strip(),
+                    state=str(item.get("region", "") or "").strip(),
+                    country=str(item.get("country", "") or "").strip(),
+                )
+            )
+
+        if len(normalized_flat) != len(flattened):
+            raise ValueError("Normalized location count mismatch")
+
+        out: list[list[Location]] = []
+        offset = 0
+        for batch in raw_location_batches:
+            count = len(batch)
+            out.append(normalized_flat[offset : offset + count])
+            offset += count
         return out
 
     @staticmethod

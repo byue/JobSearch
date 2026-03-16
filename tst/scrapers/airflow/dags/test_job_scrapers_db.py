@@ -154,13 +154,25 @@ class JobScrapersDbTest(unittest.TestCase):
     def test_upsert_jobs(self) -> None:
         conn = _FakeConnection()
         engine = _FakeEngine(conn)
-        rows = [{"run_id": "r", "version_ts": datetime.now(timezone.utc), "company": "google", "external_job_id": "1"}]
+        rows = [
+            {
+                "run_id": "r",
+                "version_ts": datetime.now(timezone.utc),
+                "company": "google",
+                "external_job_id": "1",
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
+            }
+        ]
         with patch.object(self.mod, "_db_engine", return_value=engine):
             self.mod.upsert_jobs("db", rows=rows)
         self.assertTrue(engine.disposed)
         self.assertEqual(len(conn.calls[0][1]), 1)
         self.assertEqual(conn.calls[0][1][0]["external_job_id"], "1")
         self.assertEqual(conn.calls[0][1][0]["skills"], "[]")
+        self.assertEqual(
+            conn.calls[0][1][0]["locations"],
+            '[{"city": "Seattle", "region": "Washington", "country": "United States"}]',
+        )
 
     def test_mark_missing_details(self) -> None:
         conn = _FakeConnection()
@@ -437,9 +449,7 @@ class JobScrapersDbTest(unittest.TestCase):
                             "title": "Role",
                             "details_url": "https://details",
                             "apply_url": "https://apply",
-                            "city": "Seattle",
-                            "state": "WA",
-                            "country": "US",
+                            "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
                             "skills": ["Python"],
                             "job_description_embedding": [0.1, -0.2],
                             "posted_ts": datetime(2026, 1, 2, tzinfo=timezone.utc),

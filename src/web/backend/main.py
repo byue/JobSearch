@@ -27,6 +27,7 @@ from web.backend.schemas import (
     GetJobDetailsResponse,
     GetJobsRequest,
     GetJobsResponse,
+    GetLocationFiltersResponse,
     JobMetadata,
     Location,
 )
@@ -175,6 +176,13 @@ def _normalize_job_type(value: str | None) -> str | None:
     return None
 
 
+def _normalize_location_filter(value: str | None) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized or normalized == "__all__":
+        return None
+    return normalized
+
+
 def _validate_company_in_run(run_id: str, company: str) -> str:
     normalized = company.strip().lower()
     if not normalized:
@@ -231,12 +239,20 @@ def _format_es_posted_ts(value: int | float | str | None) -> int | None:
 
 
 def _build_location_from_source(source: dict[str, Any]) -> list[Location]:
-    city = str(source.get("city") or "")
-    state = str(source.get("state") or "")
-    country = str(source.get("country") or "")
-    if not any([city, state, country]):
+    raw_locations = source.get("locations")
+    if not isinstance(raw_locations, list):
         return []
-    return [Location(city=city, state=state, country=country)]
+    out: list[Location] = []
+    for raw_location in raw_locations:
+        if not isinstance(raw_location, dict):
+            continue
+        city = str(raw_location.get("city") or "")
+        state = str(raw_location.get("region") or "")
+        country = str(raw_location.get("country") or "")
+        if not any([city, state, country]):
+            continue
+        out.append(Location(city=city, state=state, country=country))
+    return out
 
 
 def _hits_from_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -274,7 +290,41 @@ def _job_metadata_from_hit(hit: dict[str, Any]) -> JobMetadata:
     )
 
 
-def _search_filters(company: str | None, posted_within: str | None, job_type: str | None) -> list[dict[str, Any]]:
+def _location_nested_filter(
+    country: str | None,
+    region: str | None,
+    city: str | None,
+) -> dict[str, Any] | None:
+    nested_filters: list[dict[str, Any]] = []
+    if country:
+        nested_filters.append({"term": {"locations.country": country}})
+    if region:
+        nested_filters.append({"term": {"locations.region": region}})
+    if city:
+        nested_filters.append({"term": {"locations.city": city}})
+    if not nested_filters:
+        return None
+    return {
+        "nested": {
+            "path": "locations",
+            "query": {
+                "bool": {
+                    "filter": nested_filters,
+                }
+            },
+        }
+    }
+
+
+def _search_filters(
+    company: str | None,
+    posted_within: str | None,
+    job_type: str | None,
+    *,
+    country: str | None = None,
+    region: str | None = None,
+    city: str | None = None,
+) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
     if company:
         filters.append({"term": {"company": company}})
@@ -282,10 +332,22 @@ def _search_filters(company: str | None, posted_within: str | None, job_type: st
         filters.append({"term": {"job_type": job_type}})
     if posted_within:
         filters.append({"range": {"posted_ts": {"gte": f"now-{posted_within}"}}})
+    location_filter = _location_nested_filter(country, region, city)
+    if location_filter:
+        filters.append(location_filter)
     return filters
 
 
-def _browse_jobs(company: str | None, *, posted_within: str | None, job_type: str | None, page: int) -> tuple[list[JobMetadata], int, bool]:
+def _browse_jobs(
+    company: str | None,
+    *,
+    posted_within: str | None,
+    job_type: str | None,
+    country: str | None,
+    region: str | None,
+    city: str | None,
+    page: int,
+) -> tuple[list[JobMetadata], int, bool]:
     offset = (page - 1) * _PAGE_SIZE
     body = {
         "track_total_hits": True,
@@ -297,7 +359,14 @@ def _browse_jobs(company: str | None, *, posted_within: str | None, job_type: st
         ],
         "query": {
             "bool": {
-                "filter": _search_filters(company, posted_within, job_type),
+                "filter": _search_filters(
+                    company,
+                    posted_within,
+                    job_type,
+                    country=country,
+                    region=region,
+                    city=city,
+                ),
             }
         },
     }
@@ -346,8 +415,18 @@ def _search_jobs(
     page: int,
     posted_within: str | None,
     job_type: str | None,
+    country: str | None,
+    region: str | None,
+    city: str | None,
 ) -> tuple[list[JobMetadata], int, bool]:
-    filters = _search_filters(company, posted_within, job_type)
+    filters = _search_filters(
+        company,
+        posted_within,
+        job_type,
+        country=country,
+        region=region,
+        city=city,
+    )
 
     query_embedding = _query_embedding(query)
     bm25_body = {
@@ -388,6 +467,88 @@ def _search_jobs(
     jobs = [_job_metadata_from_hit(hit) for hit in paged_hits]
     total_results = len(fused_hits)
     return jobs, total_results, offset + len(jobs) < total_results
+
+
+def _location_terms_agg(field: str, *, country: str | None = None, region: str | None = None) -> dict[str, Any]:
+    scoped_filters: list[dict[str, Any]] = [
+        {"exists": {"field": f"locations.{field}"}},
+    ]
+    if country:
+        scoped_filters.append({"term": {"locations.country": country}})
+    if region:
+        scoped_filters.append({"term": {"locations.region": region}})
+    return {
+        "filter": {
+            "bool": {
+                "filter": scoped_filters,
+                "must_not": [
+                    {"term": {f"locations.{field}": ""}},
+                ],
+            }
+        },
+        "aggs": {
+            "values": {
+                "terms": {
+                    "field": f"locations.{field}",
+                    "size": 1000,
+                    "order": {"_key": "asc"},
+                }
+            }
+        },
+    }
+
+
+def _agg_bucket_keys(payload: dict[str, Any], *path: str) -> list[str]:
+    current: Any = payload
+    for segment in path:
+        if not isinstance(current, dict):
+            return []
+        current = current.get(segment)
+    if not isinstance(current, list):
+        return []
+    out: list[str] = []
+    for item in current:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if key:
+            out.append(key)
+    return out
+
+
+def _get_location_filters(
+    company: str | None,
+    *,
+    posted_within: str | None,
+    job_type: str | None,
+    country: str | None,
+    region: str | None,
+) -> tuple[list[str], list[str], list[str]]:
+    body = {
+        "size": 0,
+        "track_total_hits": False,
+        "query": {
+            "bool": {
+                "filter": _search_filters(company, posted_within, job_type),
+            }
+        },
+        "aggs": {
+            "locations": {
+                "nested": {"path": "locations"},
+                "aggs": {
+                    "countries": _location_terms_agg("country"),
+                    "regions": _location_terms_agg("region", country=country),
+                    "cities": _location_terms_agg("city", country=country, region=region),
+                },
+            }
+        },
+    }
+    payload = _es_client().search(index_name=_ES_ALIAS, body=body)
+    return (
+        _agg_bucket_keys(payload, "aggregations", "locations", "countries", "values", "buckets"),
+        _agg_bucket_keys(payload, "aggregations", "locations", "regions", "values", "buckets"),
+        _agg_bucket_keys(payload, "aggregations", "locations", "cities", "values", "buckets"),
+    )
 
 
 def _log_company_request(*, endpoint: str, company: str, status: int | None) -> None:
@@ -454,6 +615,9 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
     query = str(payload.query or "").strip()
     posted_within = _normalize_posted_within(payload.posted_within)
     job_type = _normalize_job_type(payload.job_type)
+    country = _normalize_location_filter(payload.country)
+    region = _normalize_location_filter(payload.region)
+    city = _normalize_location_filter(payload.city)
 
     try:
         if query:
@@ -463,12 +627,18 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
                 page=page,
                 posted_within=posted_within,
                 job_type=job_type,
+                country=country,
+                region=region,
+                city=city,
             )
         else:
             jobs, total_results, has_next_page = _browse_jobs(
                 company,
                 posted_within=posted_within,
                 job_type=job_type,
+                country=country,
+                region=region,
+                city=city,
                 page=page,
             )
     except requests.exceptions.RequestException as exc:
@@ -503,6 +673,39 @@ def get_companies() -> GetCompaniesResponse:
         ).fetchall()
     companies = [str(row["company"]) for row in rows]
     return GetCompaniesResponse(status=200, error=None, companies=companies)
+
+
+@app.get("/get_location_filters", response_model=GetLocationFiltersResponse)
+def get_location_filters(
+    company: str | None = None,
+    posted_within: str | None = None,
+    job_type: str | None = None,
+    country: str | None = None,
+    region: str | None = None,
+) -> GetLocationFiltersResponse:
+    run_id = _active_run_id()
+    normalized_company = _resolve_company_filter(run_id, company)
+    normalized_posted_within = _normalize_posted_within(posted_within)
+    normalized_job_type = _normalize_job_type(job_type)
+    normalized_country = _normalize_location_filter(country)
+    normalized_region = _normalize_location_filter(region)
+    try:
+        countries, regions, cities = _get_location_filters(
+            normalized_company,
+            posted_within=normalized_posted_within,
+            job_type=normalized_job_type,
+            country=normalized_country,
+            region=normalized_region,
+        )
+    except requests.exceptions.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Search index unavailable: {exc}") from exc
+    return GetLocationFiltersResponse(
+        status=200,
+        error=None,
+        countries=countries,
+        regions=regions,
+        cities=cities,
+    )
 
 
 @app.post("/get_job_details", response_model=GetJobDetailsResponse)

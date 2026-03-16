@@ -185,9 +185,14 @@ def job_scrapers_local_dag() -> None:
                 },
                 "details_url": {"type": "keyword"},
                 "apply_url": {"type": "keyword"},
-                "city": {"type": "keyword"},
-                "state": {"type": "keyword"},
-                "country": {"type": "keyword"},
+                "locations": {
+                    "type": "nested",
+                    "properties": {
+                        "city": {"type": "keyword"},
+                        "region": {"type": "keyword"},
+                        "country": {"type": "keyword"},
+                    },
+                },
                 "posted_ts": {"type": "date"},
                 "skills": {"type": "keyword"},
                 "job_description": {"type": "text"},
@@ -301,6 +306,7 @@ def job_scrapers_local_dag() -> None:
             company=company,
             proxy_management_client=proxy_management_client,
             default_request_policy=_build_default_request_policy(),
+            features_client=_build_features_client() if company in {"amazon", "apple", "google", "meta", "microsoft", "netflix"} else None,
         )
         response = scraper_client.get_jobs(page=1)
         pages_to_fetch = _resolve_total_pages(response, max_pages=max_pages)
@@ -340,6 +346,7 @@ def job_scrapers_local_dag() -> None:
             company=company,
             proxy_management_client=proxy_management_client,
             default_request_policy=_build_default_request_policy(),
+            features_client=_build_features_client() if company in {"amazon", "apple", "google", "meta", "microsoft", "netflix"} else None,
         )
 
         response = scraper_client.get_jobs(page=page)
@@ -356,13 +363,22 @@ def job_scrapers_local_dag() -> None:
             job_type = str(getattr(job, "jobCategory", "") or "").strip() or None
             if job_type not in ALLOWED_JOB_CATEGORIES:
                 continue
-            locations = list(getattr(job, "locations", []) or [])
-            city = state = country = None
-            if locations:
-                loc = locations[0]
-                city = str(getattr(loc, "city", "") or "").strip() or None
-                state = str(getattr(loc, "state", "") or "").strip() or None
-                country = str(getattr(loc, "country", "") or "").strip() or None
+            raw_locations = list(getattr(job, "locations", []) or [])
+            locations = [
+                {
+                    "city": str(getattr(loc, "city", "") or "").strip() or None,
+                    "region": str(getattr(loc, "state", "") or "").strip() or None,
+                    "country": str(getattr(loc, "country", "") or "").strip() or None,
+                }
+                for loc in raw_locations
+                if any(
+                    [
+                        str(getattr(loc, "city", "") or "").strip(),
+                        str(getattr(loc, "state", "") or "").strip(),
+                        str(getattr(loc, "country", "") or "").strip(),
+                    ]
+                )
+            ]
             posted_ts = getattr(job, "postedTs", None)
             jobs_payload.append(
                 {
@@ -371,9 +387,7 @@ def job_scrapers_local_dag() -> None:
                     "job_type": job_type,
                     "details_url": str(getattr(job, "detailsUrl", "") or "").strip() or None,
                     "apply_url": str(getattr(job, "applyUrl", "") or "").strip() or None,
-                    "city": city,
-                    "state": state,
-                    "country": country,
+                    "locations": locations,
                     "posted_ts": int(posted_ts) if isinstance(posted_ts, int) else None,
                 }
             )
@@ -391,9 +405,7 @@ def job_scrapers_local_dag() -> None:
                     "job_type": job.get("job_type"),
                     "details_url": job.get("details_url"),
                     "apply_url": job.get("apply_url"),
-                    "city": job.get("city"),
-                    "state": job.get("state"),
-                    "country": job.get("country"),
+                    "locations": job.get("locations") or [],
                     "posted_ts": (
                         datetime.fromtimestamp(int(posted_ts_raw), tz=timezone.utc)
                         if isinstance(posted_ts_raw, int)
@@ -484,6 +496,7 @@ def job_scrapers_local_dag() -> None:
             company=company,
             proxy_management_client=proxy_management_client,
             default_request_policy=_build_default_request_policy(),
+            features_client=_build_features_client() if company in {"amazon", "apple", "google", "meta", "microsoft", "netflix"} else None,
         )
 
         response = scraper_client.get_job_details(job_id=job_id)
@@ -772,9 +785,7 @@ def job_scrapers_local_dag() -> None:
                             "title": row.get("title"),
                             "details_url": row.get("details_url"),
                             "apply_url": row.get("apply_url"),
-                            "city": row.get("city"),
-                            "state": row.get("state"),
-                            "country": row.get("country"),
+                            "locations": row.get("locations") or [],
                             "posted_ts": _to_posted_ts_value(row.get("posted_ts")),
                             "skills": [str(skill).strip() for skill in skills if str(skill).strip()],
                             "job_description": str(job_description),

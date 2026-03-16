@@ -68,7 +68,12 @@ def require_non_empty_string_field(payload: Mapping[str, Any], *, field: str, co
     return value.strip()
 
 
-def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetadata:
+def parse_job_metadata(
+    *,
+    payload: Mapping[str, Any],
+    base_url: str,
+    locations: list[Location] | None = None,
+) -> JobMetadata:
     raw_job_id = payload.get("id")
     job_id = str(raw_job_id).strip()
     if not job_id:
@@ -79,14 +84,13 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetad
         raise ValueError(
             f"Unexpected Microsoft API payload for job '{job_id}': missing required integer field 'postedTs'"
         )
-    standardized_locations = string_list(payload.get("standardizedLocations"))
 
     return JobMetadata(
         id=job_id,
         name=name,
         company="microsoft",
         jobCategory=infer_job_category_from_title(title=name),
-        locations=to_locations(standardized_locations),
+        locations=list(locations or []),
         postedTs=posted_ts,
         detailsUrl=build_details_url(
             position_url=payload.get("positionUrl"),
@@ -258,26 +262,6 @@ def _render_child_block(node: object) -> str | None:
         previous_blank = False
     body = "\n".join(compact_lines).strip()
     return body or None
-
-
-def to_locations(locations: list[str]) -> list[Location]:
-    out: list[Location] = []
-    for location in locations:
-        parts = [part.strip() for part in location.split(",") if part.strip()]
-        city = ""
-        state = ""
-        country = ""
-        if len(parts) == 1:
-            country = parts[0]
-        elif len(parts) == 2:
-            state = parts[0]
-            country = parts[1]
-        elif len(parts) >= 3:
-            city = parts[0]
-            state = parts[1]
-            country = ", ".join(parts[2:])
-        out.append(Location(city=city, state=state, country=country))
-    return out
 
 
 def build_apply_url(*, job_id: str, base_url: str) -> str | None:

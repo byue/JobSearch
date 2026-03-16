@@ -30,16 +30,22 @@ class AmazonParserTest(unittest.TestCase):
         self.assertIsNone(parser.parse_posted_ts("bad-date"))
         self.assertIsNone(parser.parse_posted_ts(" "))
 
-    def test_extract_locations_and_lists(self) -> None:
-        payload = {"locations": [{"city": "Seattle", "state": "WA", "countryIso3a": "USA"}]}
-        locations = parser.extract_locations(payload)
-        self.assertEqual(len(locations), 1)
-        self.assertEqual(locations[0].city, "Seattle")
-        payload_json_locations = {"locations": ['{"city":"SF","state":"CA","countryIso3a":"USA"}']}
-        locations_json = parser.extract_locations(payload_json_locations)
-        self.assertEqual(locations_json[0].city, "SF")
-        fallback = parser.extract_locations({"location": "Seattle, WA, USA"})
-        self.assertEqual(fallback[0].country, "USA")
+    def test_extract_location_strings(self) -> None:
+        payload = {
+            "locations": [
+                '{"normalizedLocation":"Seattle, Washington, USA"}',
+                '{"normalizedLocation":"New York, New York, USA"}',
+            ]
+        }
+        self.assertEqual(
+            parser.extract_location_strings(payload),
+            ["Seattle, Washington, USA", "New York, New York, USA"],
+        )
+        self.assertEqual(
+            parser.extract_location_strings({"locations": [1, '{"normalizedLocation":"San Francisco, California, USA"}']}),
+            ["San Francisco, California, USA"],
+        )
+        self.assertEqual(parser.extract_location_strings({"location": "Seattle, WA, USA"}), [])
 
     def test_parse_job_metadata_and_details(self) -> None:
         metadata = parser.parse_job_metadata(
@@ -50,9 +56,9 @@ class AmazonParserTest(unittest.TestCase):
                 "job_path": "/en/jobs/1",
                 "url_next_step": "/applicant/jobs/1/apply",
                 "posted_date": "January 01, 2024",
-                "location": "Seattle, WA, USA",
             },
             base_url="https://www.amazon.jobs",
+            locations=[parser.Location(city="Seattle", state="Washington", country="United States")],
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "amazon")
@@ -154,11 +160,10 @@ class AmazonParserTest(unittest.TestCase):
         self.assertIsNone(parser.build_apply_url(job_id=" ", raw_apply_url=None, base_url="https://x"))
         self.assertIsNotNone(parser.parse_posted_ts("Jan 01, 2024"))
 
-        parsed_from_fallback = parser.extract_locations({"location": "USA, Seattle"})
-        self.assertEqual(parsed_from_fallback[0].country, "USA")
-        self.assertEqual(parsed_from_fallback[0].city, "Seattle")
-        self.assertEqual(parser.extract_locations({"location": "USA"}), [parser.Location(city="", state="", country="USA")])
-        self.assertEqual(parser.extract_locations({"locations": ["bad-json"]}), [])
+        self.assertEqual(parser.extract_location_strings({"location": "USA, Seattle"}), [])
+        self.assertEqual(parser.extract_location_strings({"location": "USA"}), [])
+        self.assertEqual(parser.extract_location_strings({"locations": ["bad-json"]}), [])
+        self.assertEqual(parser.extract_location_strings({"locations": ['["not-a-mapping"]']}), [])
 
         self.assertEqual(parser.clean_html_fragment("   "), "")
 

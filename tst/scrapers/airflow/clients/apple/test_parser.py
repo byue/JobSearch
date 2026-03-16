@@ -24,11 +24,11 @@ class AppleParserTest(unittest.TestCase):
                 "positionId": "1",
                 "postingTitle": "Software Engineer",
                 "transformedPostingTitle": "engineer",
-                "locations": [{"city": "Cupertino", "stateProvince": "CA", "countryName": "USA"}],
                 "postDateInGMT": "2024-01-01T00:00:00Z",
             },
             base_url="https://jobs.apple.com",
             locale="en-us",
+            locations=[parser.Location(city="Cupertino", state="California", country="United States")],
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "apple")
@@ -61,7 +61,7 @@ class AppleParserTest(unittest.TestCase):
             parser.build_details_url(base_url="https://jobs.apple.com", locale="en-us", job_id="1", transformed_title="engineer"),
             "https://jobs.apple.com/en-us/details/1/engineer",
         )
-        self.assertEqual(parser.extract_locations("bad"), [])
+        self.assertEqual(parser.extract_location_strings("bad"), [])
 
     def test_additional_branches(self) -> None:
         self.assertEqual(parser.to_int("-10"), -10)
@@ -77,9 +77,13 @@ class AppleParserTest(unittest.TestCase):
         )
         self.assertEqual(manager.jobCategory, "manager")
 
-        with_fallback = parser.extract_locations([{"name": "United States"}])
-        self.assertEqual(with_fallback[0].country, "United States")
-        self.assertEqual(parser.extract_locations([1, {"city": "X"}])[0].city, "X")
+        with_fallback = parser.extract_location_strings([{"name": "United States"}])
+        self.assertEqual(with_fallback, ["United States"])
+        self.assertEqual(parser.extract_location_strings([1, {"city": "X"}]), ["X"])
+        self.assertEqual(
+            parser.extract_location_strings([{"city": "Cupertino", "stateProvince": "CA", "countryName": "USA"}]),
+            ["Cupertino, CA, USA"],
+        )
         html_payload = 'window.__staticRouterHydrationData = JSON.parse("{\\"a\\":1}");'
         with patch(
             "scrapers.airflow.clients.apple.parser.json.loads",

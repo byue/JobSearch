@@ -23,10 +23,10 @@ class MicrosoftParserTest(unittest.TestCase):
                 "id": "1",
                 "name": "Software Engineer",
                 "postedTs": 1700000000,
-                "standardizedLocations": ["Seattle, WA, USA"],
                 "positionUrl": "/careers/job/1",
             },
             base_url="https://apply.careers.microsoft.com",
+            locations=[parser.Location(city="Seattle", state="Washington", country="United States")],
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "microsoft")
@@ -88,8 +88,6 @@ class MicrosoftParserTest(unittest.TestCase):
         )
 
     def test_misc_helpers(self) -> None:
-        locs = parser.to_locations(["Seattle, WA, USA"])
-        self.assertEqual(locs[0].city, "Seattle")
         self.assertEqual(parser.build_apply_url(job_id="1", base_url="https://x"), "https://x/careers/apply?pid=1")
         self.assertIsNone(parser.build_apply_url(job_id=" ", base_url="https://x"))
         self.assertEqual(
@@ -105,8 +103,6 @@ class MicrosoftParserTest(unittest.TestCase):
 
     def test_additional_branches(self) -> None:
         self.assertIsNone(parser.to_optional_str(None))
-        self.assertEqual(parser.to_locations(["State, Country"])[0].state, "State")
-        self.assertEqual(parser.to_locations(["Country"])[0].country, "Country")
         with self.assertRaises(ValueError):
             parser.parse_job_metadata(payload={"id": " ", "name": "n", "postedTs": 1}, base_url="https://x")
         self.assertEqual(

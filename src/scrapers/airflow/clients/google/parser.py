@@ -57,11 +57,17 @@ def extract_row_from_ds0(html_payload: str) -> list[Any] | None:
     return row if isinstance(row, list) else None
 
 
-def parse_job_metadata(*, row: list[Any], page: int, base_url: str, results_path: str) -> JobMetadata:
+def parse_job_metadata(
+    *,
+    row: list[Any],
+    page: int,
+    base_url: str,
+    results_path: str,
+    locations: list[Location] | None = None,
+) -> JobMetadata:
     job_id = as_str(get(row, 0))
     name = as_optional_str(get(row, 1))
     apply_url = as_optional_str(get(row, 2))
-    standardized_locations = extract_locations(get(row, 9))
     posted_ts = extract_ts_seconds(get(row, 12)) or extract_ts_seconds(get(row, 13))
 
     return JobMetadata(
@@ -69,7 +75,7 @@ def parse_job_metadata(*, row: list[Any], page: int, base_url: str, results_path
         name=name,
         company="google",
         jobCategory=infer_job_category_from_title(title=name),
-        locations=to_locations(standardized_locations),
+        locations=list(locations or []),
         postedTs=posted_ts,
         applyUrl=apply_url,
         detailsUrl=build_public_url(job_id=job_id, name=name, page=page, base_url=base_url, results_path=results_path),
@@ -143,26 +149,6 @@ def build_public_url(*, job_id: str, name: str | None, page: int, base_url: str,
     if page > 1:
         path = f"{path}?page={page}"
     return urllib.parse.urljoin(f"{base_url}/", path.lstrip("/"))
-
-
-def to_locations(locations: list[str]) -> list[Location]:
-    out: list[Location] = []
-    for location in locations:
-        parts = [part.strip() for part in location.split(",") if part.strip()]
-        city = ""
-        state = ""
-        country = ""
-        if len(parts) == 1:
-            country = parts[0]
-        elif len(parts) == 2:
-            state = parts[0]
-            country = parts[1]
-        elif len(parts) >= 3:
-            city = parts[0]
-            state = parts[1]
-            country = ", ".join(parts[2:])
-        out.append(Location(city=city, state=state, country=country))
-    return out
 
 
 def get(values: list[Any], index: int) -> Any:

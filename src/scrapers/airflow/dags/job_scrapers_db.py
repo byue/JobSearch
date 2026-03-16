@@ -120,6 +120,19 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
         raw_skills = prepared.get("skills")
         skills = raw_skills if isinstance(raw_skills, list) else []
         prepared["skills"] = json.dumps([str(skill).strip() for skill in skills if str(skill).strip()])
+        raw_locations = prepared.get("locations")
+        locations = raw_locations if isinstance(raw_locations, list) else []
+        prepared["locations"] = json.dumps(
+            [
+                {
+                    "city": str(location.get("city") or "").strip() or None,
+                    "region": str(location.get("region") or "").strip() or None,
+                    "country": str(location.get("country") or "").strip() or None,
+                }
+                for location in locations
+                if isinstance(location, dict)
+            ]
+        )
         prepared_rows.append(prepared)
     engine = _db_engine(db_url)
     try:
@@ -136,9 +149,7 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         job_type,
                         details_url,
                         apply_url,
-                        city,
-                        state,
-                        country,
+                        locations,
                         skills,
                         posted_ts,
                         is_missing_details,
@@ -153,9 +164,7 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         :job_type,
                         :details_url,
                         :apply_url,
-                        :city,
-                        :state,
-                        :country,
+                        CAST(:locations AS JSONB),
                         CAST(:skills AS JSONB),
                         :posted_ts,
                         FALSE,
@@ -167,9 +176,7 @@ def upsert_jobs(db_url: str, *, rows: list[dict[str, Any]]) -> None:
                         job_type = EXCLUDED.job_type,
                         details_url = EXCLUDED.details_url,
                         apply_url = EXCLUDED.apply_url,
-                        city = EXCLUDED.city,
-                        state = EXCLUDED.state,
-                        country = EXCLUDED.country,
+                        locations = EXCLUDED.locations,
                         skills = CASE
                             WHEN EXCLUDED.skills = '[]'::jsonb THEN jobs.skills
                             ELSE EXCLUDED.skills
@@ -753,9 +760,7 @@ def fetch_search_index_requests(
                       j.job_type,
                       j.details_url,
                       j.apply_url,
-                      j.city,
-                      j.state,
-                      j.country,
+                      j.locations,
                       j.skills,
                       j.job_description_embedding,
                       j.posted_ts,

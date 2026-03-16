@@ -194,6 +194,70 @@ class FeaturesClientTest(unittest.TestCase):
             timeout=2.0,
         )
 
+    def test_normalize_locations(self) -> None:
+        class _FakeResponse:
+            def __init__(self, payload=None) -> None:
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client = self.mod.FeaturesClient(
+            base_url="http://localhost:8010",
+            request_policy=self.RequestPolicy(timeout_seconds=2.0, max_retries=1),
+        )
+        client._session = Mock()
+        client._session.request.return_value = _FakeResponse(
+            payload={
+                "status": 200,
+                "error": None,
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
+            }
+        )
+
+        out = client.normalize_locations(locations=[" Seattle, WA, USA ", " "])
+
+        self.assertEqual(out["locations"][0]["city"], "Seattle")
+        client._session.request.assert_called_once_with(
+            method="POST",
+            url="http://localhost:8010/normalize_locations",
+            json={"locations": ["Seattle, WA, USA"]},
+            timeout=2.0,
+        )
+
+    def test_normalize_locations_batches_requests(self) -> None:
+        class _FakeResponse:
+            def __init__(self, payload=None) -> None:
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client = self.mod.FeaturesClient(
+            base_url="http://localhost:8010",
+            request_policy=self.RequestPolicy(timeout_seconds=2.0, max_retries=1),
+        )
+        client._session = Mock()
+        client._session.request.side_effect = [
+            _FakeResponse(payload={"locations": [{"city": "A"}] * 100}),
+            _FakeResponse(payload={"locations": [{"city": "B"}]}),
+        ]
+
+        out = client.normalize_locations(locations=[f"Location {index}" for index in range(101)])
+
+        self.assertEqual(len(out["locations"]), 101)
+        self.assertEqual(client._session.request.call_count, 2)
+        first_call = client._session.request.call_args_list[0]
+        second_call = client._session.request.call_args_list[1]
+        self.assertEqual(len(first_call.kwargs["json"]["locations"]), 100)
+        self.assertEqual(len(second_call.kwargs["json"]["locations"]), 1)
+
     def test_get_query_embedding_validates_text_and_payload(self) -> None:
         client = self.mod.FeaturesClient(
             base_url="http://localhost:8010",
@@ -213,6 +277,37 @@ class FeaturesClientTest(unittest.TestCase):
         client._session.request.return_value = _FakeResponse()
         with self.assertRaises(ValueError):
             client.get_query_embedding(text="Need Python")
+
+    def test_normalize_locations_validates_input_and_payload(self) -> None:
+        client = self.mod.FeaturesClient(
+            base_url="http://localhost:8010",
+            request_policy=self.RequestPolicy(timeout_seconds=2.0, max_retries=1),
+        )
+        with self.assertRaises(ValueError):
+            client.normalize_locations(locations=[" ", ""])
+
+        class _FakeResponse:
+            def json(self):
+                return []
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client._session = Mock()
+        client._session.request.return_value = _FakeResponse()
+        with self.assertRaises(ValueError):
+            client.normalize_locations(locations=["Seattle, WA, USA"])
+
+        class _FakeResponseWrongShape:
+            def json(self):
+                return {"locations": "bad"}
+
+            def raise_for_status(self) -> None:
+                return None
+
+        client._session.request.return_value = _FakeResponseWrongShape()
+        with self.assertRaises(ValueError):
+            client.normalize_locations(locations=["Seattle, WA, USA"])
 
     def test_get_job_skills_uses_connect_timeout_tuple(self) -> None:
         class _FakeResponse:
