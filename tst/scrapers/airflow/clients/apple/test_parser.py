@@ -22,7 +22,7 @@ class AppleParserTest(unittest.TestCase):
         metadata = parser.parse_job_metadata(
             payload={
                 "positionId": "1",
-                "postingTitle": "Engineer",
+                "postingTitle": "Software Engineer",
                 "transformedPostingTitle": "engineer",
                 "locations": [{"city": "Cupertino", "stateProvince": "CA", "countryName": "USA"}],
                 "postDateInGMT": "2024-01-01T00:00:00Z",
@@ -32,6 +32,7 @@ class AppleParserTest(unittest.TestCase):
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "apple")
+        self.assertEqual(metadata.jobCategory, "software_engineer")
 
         details = parser.parse_job_details(
             payload={
@@ -68,6 +69,13 @@ class AppleParserTest(unittest.TestCase):
         self.assertEqual(parser.dedupe(["a", "a", "b"]), ["a", "b"])
         with self.assertRaises(ValueError):
             parser.parse_job_metadata(payload={"positionId": " "}, base_url="https://jobs.apple.com", locale="en-us")
+
+        manager = parser.parse_job_metadata(
+            payload={"positionId": "2", "postingTitle": "Engineering Manager"},
+            base_url="https://jobs.apple.com",
+            locale="en-us",
+        )
+        self.assertEqual(manager.jobCategory, "manager")
 
         with_fallback = parser.extract_locations([{"name": "United States"}])
         self.assertEqual(with_fallback[0].country, "United States")

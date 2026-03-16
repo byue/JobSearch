@@ -21,13 +21,31 @@ class AmazonClientTest(unittest.TestCase):
             client.transport,
             "get_json",
             return_value={
-                "jobs": [{"id_icims": "1", "title": "SWE", "location": "Seattle, WA, USA"}],
+                "jobs": [
+                    {
+                        "id_icims": "1",
+                        "title": "SWE",
+                        "job_category": "Software Development",
+                        "location": "Seattle, WA, USA",
+                    }
+                ],
                 "hits": 1,
             },
-        ):
+        ) as get_json:
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
+            self.assertIsNone(out.jobs[0].jobCategory)
+            self.assertEqual(
+                get_json.call_args.kwargs["params"],
+                [
+                    ("offset", "0"),
+                    ("result_limit", "10"),
+                    ("sort", "relevant"),
+                    ("category[]", "software-development"),
+                    ("category[]", "machine-learning-science"),
+                ],
+            )
 
         with patch.object(
             client.transport,

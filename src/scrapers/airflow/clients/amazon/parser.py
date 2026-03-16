@@ -12,6 +12,9 @@ from typing import Any
 from lxml import html as lxml_html
 
 from scrapers.airflow.clients.common.html_text import extract_text
+from common.job_taxonomy import (
+    infer_job_category_from_title,
+)
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 
@@ -60,11 +63,13 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str) -> JobMetad
         base_url=base_url,
     )
     posted_ts = parse_posted_ts(payload.get("posted_date"))
+    job_type = infer_job_category_from_title(title=name)
 
     return JobMetadata(
         id=job_id,
         name=name,
         company="amazon",
+        jobCategory=job_type,
         locations=extract_locations(payload),
         postedTs=posted_ts,
         applyUrl=apply_url,

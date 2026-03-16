@@ -25,6 +25,7 @@ class GetJobsRequest(BaseModel):
     company: str | None = None
     query: str | None = None
     posted_within: str | None = None
+    job_type: str | None = None
     pagination_index: int = Field(default=1, ge=1)
 
 
@@ -37,6 +38,7 @@ class JobMetadata(BaseModel):
     runId: str | None = None
     name: str | None = None
     company: str | None = None
+    jobCategory: str | None = None
     locations: list[Location] = Field(default_factory=list)
     postedTs: int | None = None
     applyUrl: str | None = None

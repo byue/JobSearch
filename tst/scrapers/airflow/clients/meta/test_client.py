@@ -121,6 +121,11 @@ class MetaClientTest(unittest.TestCase):
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "meta")
         self.assertIsNone(metadata.postedTs)
+        self.assertIsNone(metadata.jobCategory)
+        classified_metadata = client._parse_job_metadata(
+            {"id": "2", "title": "Software Engineer, Product", "locations": ["Seattle, WA, USA"]}
+        )
+        self.assertEqual(classified_metadata.jobCategory, "software_engineer")
         with self.assertRaises(ValueError):
             client._parse_job_metadata({"id": " "})
 

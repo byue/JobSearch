@@ -9,6 +9,7 @@ import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
+from common.job_taxonomy import infer_job_category_from_title
 from scrapers.airflow.clients.common.html_text import extract_text
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
@@ -79,6 +80,7 @@ def parse_job_metadata(*, payload: Mapping[str, Any], base_url: str, locale: str
         id=job_id,
         name=name,
         company="apple",
+        jobCategory=infer_job_category_from_title(title=name),
         locations=extract_locations(payload.get("locations")),
         postedTs=parse_posted_ts(payload.get("postDateInGMT")) or parse_posting_date(payload.get("postingDate")),
         detailsUrl=build_details_url(base_url=base_url, locale=locale, job_id=job_id, transformed_title=transformed_title),

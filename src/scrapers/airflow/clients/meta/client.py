@@ -16,6 +16,7 @@ import requests
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.html_text import extract_text
+from common.job_taxonomy import infer_job_category_from_title
 from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import (
     build_get_url,
@@ -324,6 +325,7 @@ class MetaJobsClient(JobsClient):
             id=job_id,
             name=name,
             company="meta",
+            jobCategory=infer_job_category_from_title(title=name),
             locations=self._to_locations(standardized_locations),
             postedTs=None,
             detailsUrl=details_url,

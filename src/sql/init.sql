@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   company              TEXT NOT NULL,
   external_job_id      TEXT NOT NULL,
   title                TEXT,
+  job_type             TEXT,
   details_url          TEXT,
   apply_url            TEXT,
   city                 TEXT,
