@@ -46,6 +46,7 @@ class AmazonParserTest(unittest.TestCase):
             payload={
                 "id_icims": "1",
                 "title": "SWE",
+                "job_category": "Software Development",
                 "job_path": "/en/jobs/1",
                 "url_next_step": "/applicant/jobs/1/apply",
                 "posted_date": "January 01, 2024",
@@ -55,7 +56,18 @@ class AmazonParserTest(unittest.TestCase):
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "amazon")
+        self.assertIsNone(metadata.jobCategory)
         self.assertIn("/en/jobs/1", metadata.detailsUrl)
+
+        mle_metadata = parser.parse_job_metadata(
+            payload={
+                "id_icims": "2",
+                "title": "Machine Learning Engineer II",
+                "job_category": "Software Development",
+            },
+            base_url="https://www.amazon.jobs",
+        )
+        self.assertEqual(mle_metadata.jobCategory, "machine_learning_engineer")
 
         details = parser.parse_job_details(
             payload={

@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     get_jobs_parser = subparsers.add_parser("get-jobs", help="POST /get_jobs")
     get_jobs_parser.add_argument("--company", required=True)
     get_jobs_parser.add_argument("--page", type=int, default=1, help="Pagination index (>=1)")
+    get_jobs_parser.add_argument("--job-type", default=None, help="Optional job type filter")
 
     get_details_parser = subparsers.add_parser("get-job-details", help="POST /get_job_details")
     get_details_parser.add_argument("--company", required=True)
@@ -75,6 +76,7 @@ def main() -> int:
             page = max(1, int(args.page))
             payload = {
                 "company": args.company,
+                "job_type": args.job_type,
                 "pagination_index": page,
             }
             result = _request(

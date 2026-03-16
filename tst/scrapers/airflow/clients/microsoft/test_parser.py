@@ -21,7 +21,7 @@ class MicrosoftParserTest(unittest.TestCase):
         metadata = parser.parse_job_metadata(
             payload={
                 "id": "1",
-                "name": "Engineer",
+                "name": "Software Engineer",
                 "postedTs": 1700000000,
                 "standardizedLocations": ["Seattle, WA, USA"],
                 "positionUrl": "/careers/job/1",
@@ -30,6 +30,7 @@ class MicrosoftParserTest(unittest.TestCase):
         )
         self.assertEqual(metadata.id, "1")
         self.assertEqual(metadata.company, "microsoft")
+        self.assertEqual(metadata.jobCategory, "software_engineer")
 
         details = parser.parse_job_details(
             payload={

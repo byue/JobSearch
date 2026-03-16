@@ -24,7 +24,7 @@ class MicrosoftClientTest(unittest.TestCase):
                 "positions": [
                     {
                         "id": "1",
-                        "name": "Engineer",
+                        "name": "Software Engineer",
                         "postedTs": 1700000000,
                         "standardizedLocations": ["Seattle, WA, USA"],
                     }
@@ -35,6 +35,7 @@ class MicrosoftClientTest(unittest.TestCase):
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
+            self.assertEqual(out.jobs[0].jobCategory, "software_engineer")
 
         with patch.object(client.transport, "get_json", return_value={"status": 200, "data": {"jobDescription": "x"}}):
             details = client.get_job_details(job_id="1")

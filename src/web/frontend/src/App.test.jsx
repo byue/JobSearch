@@ -8,6 +8,7 @@ import App, {
   getJson,
   normalizeDescription,
   normalizeCompany,
+  normalizeJobType,
   normalizePostedWithin,
   postJson,
   chooseSelectedCompany,
@@ -96,6 +97,13 @@ describe("App helpers", () => {
     expect(normalizePostedWithin(undefined)).toBe("");
     expect(normalizePostedWithin(" 7d ")).toBe("7d");
     expect(normalizePostedWithin("bad")).toBe("");
+  });
+
+  it("normalizeJobType accepts supported values only", () => {
+    expect(normalizeJobType(undefined)).toBe("");
+    expect(normalizeJobType("software_engineer")).toBe("software_engineer");
+    expect(normalizeJobType(" Machine_Learning_Engineer ")).toBe("machine_learning_engineer");
+    expect(normalizeJobType("bad")).toBe("");
   });
 
   it("extractError handles detail string/object/fallback", async () => {
@@ -203,13 +211,13 @@ describe("App component", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Software Engineer")).toBeInTheDocument();
+    expect(await screen.findByText("Software Engineer", { selector: "h3" })).toBeInTheDocument();
     expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("No Id"));
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
 
-    fireEvent.click(screen.getByText("Software Engineer"));
+    fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
 
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     expect(await screen.findByText("Job Description")).toBeInTheDocument();
@@ -230,7 +238,7 @@ describe("App component", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByText("Software Engineer"));
+    fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
 
@@ -292,6 +300,38 @@ describe("App component", () => {
       company: "amazon",
       query: "python",
       posted_within: "30d",
+      job_type: null,
+      pagination_index: 1
+    });
+  });
+
+  it("submits job-type filter with job search requests", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      )
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      );
+
+    render(<App />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Amazon" }));
+    fireEvent.change(screen.getByLabelText("Job Type"), { target: { value: "machine_learning_engineer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({
+      company: "amazon",
+      query: null,
+      posted_within: null,
+      job_type: "machine_learning_engineer",
       pagination_index: 1
     });
   });
@@ -363,6 +403,7 @@ describe("App component", () => {
       company: "google",
       query: null,
       posted_within: null,
+      job_type: null,
       pagination_index: 1
     });
   });
@@ -688,6 +729,7 @@ describe("App component", () => {
       company: null,
       query: null,
       posted_within: null,
+      job_type: null,
       pagination_index: 1
     });
 
@@ -703,6 +745,7 @@ describe("App component", () => {
       company: null,
       query: "python",
       posted_within: "7d",
+      job_type: null,
       pagination_index: 1
     });
   });

@@ -33,6 +33,7 @@ from scrapers.airflow.dags.job_scrapers_db import (
     upsert_jobs,
     upsert_publish_run_in_progress,
 )
+from common.job_taxonomy import ALLOWED_JOB_CATEGORIES
 from scrapers.airflow.clients.client_factory import build_client
 from common.request_policy import RequestPolicy
 from features.client import FeaturesClient
@@ -86,8 +87,6 @@ def _resolve_total_pages(response: Any, max_pages: int | None) -> int:
             )
         return max_pages
     return 1
-
-
 @dag(
     dag_id="job_scrapers_local",
     description="Run mapped job scraping pipeline and publish DB snapshot pointer.",
@@ -177,6 +176,7 @@ def job_scrapers_local_dag() -> None:
                 "run_id": {"type": "keyword"},
                 "company": {"type": "keyword"},
                 "external_job_id": {"type": "keyword"},
+                "job_type": {"type": "keyword"},
                 "title": {
                     "type": "text",
                     "fields": {
@@ -344,14 +344,18 @@ def job_scrapers_local_dag() -> None:
 
         response = scraper_client.get_jobs(page=page)
 
+        raw_jobs = list(response.jobs or [])
         jobs_payload: list[dict[str, Any]] = []
-        for job in (response.jobs or []):
+        for job in raw_jobs:
             raw_id = getattr(job, "id", None)
             if not raw_id:
                 raise ValueError(f"Missing job id in jobs response for company={company} page={page}")
             job_id = str(raw_id).strip()
             if not job_id:
                 raise ValueError(f"Empty job id in jobs response for company={company} page={page}")
+            job_type = str(getattr(job, "jobCategory", "") or "").strip() or None
+            if job_type not in ALLOWED_JOB_CATEGORIES:
+                continue
             locations = list(getattr(job, "locations", []) or [])
             city = state = country = None
             if locations:
@@ -364,6 +368,7 @@ def job_scrapers_local_dag() -> None:
                 {
                     "job_id": job_id,
                     "title": str(getattr(job, "name", "") or "").strip() or None,
+                    "job_type": job_type,
                     "details_url": str(getattr(job, "detailsUrl", "") or "").strip() or None,
                     "apply_url": str(getattr(job, "applyUrl", "") or "").strip() or None,
                     "city": city,
@@ -383,6 +388,7 @@ def job_scrapers_local_dag() -> None:
                     "company": company,
                     "external_job_id": str(job.get("job_id", "")).strip(),
                     "title": job.get("title"),
+                    "job_type": job.get("job_type"),
                     "details_url": job.get("details_url"),
                     "apply_url": job.get("apply_url"),
                     "city": job.get("city"),
@@ -402,7 +408,7 @@ def job_scrapers_local_dag() -> None:
         return {
             "company": company,
             "page": page,
-            "jobs_seen": len(jobs_payload),
+            "jobs_seen": len(raw_jobs),
             "job_ids": [item["job_id"] for item in jobs_payload],
             "jobs_written": len(rows),
             "error": response.error,
@@ -762,6 +768,7 @@ def job_scrapers_local_dag() -> None:
                             "run_id": run_id,
                             "company": str(row["company"]),
                             "external_job_id": str(row["external_job_id"]),
+                            "job_type": row.get("job_type"),
                             "title": row.get("title"),
                             "details_url": row.get("details_url"),
                             "apply_url": row.get("apply_url"),

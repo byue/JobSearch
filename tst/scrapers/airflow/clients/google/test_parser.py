@@ -26,6 +26,30 @@ class GoogleParserTest(unittest.TestCase):
         metadata = parser.parse_job_metadata(row=row, page=1, base_url="https://google.com", results_path="/about/careers/jobs/results/")
         self.assertEqual(metadata.id, "id1")
         self.assertEqual(metadata.company, "google")
+        self.assertIsNone(metadata.jobCategory)
+
+        software_row = [
+            "id2",
+            "Software Engineer, Infrastructure",
+            "https://apply",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            ["Seattle, WA, USA"],
+            None,
+            None,
+            1700000000,
+        ]
+        software_metadata = parser.parse_job_metadata(
+            row=software_row,
+            page=1,
+            base_url="https://google.com",
+            results_path="/about/careers/jobs/results/",
+        )
+        self.assertEqual(software_metadata.jobCategory, "software_engineer")
 
         details_row = [
             "id1",

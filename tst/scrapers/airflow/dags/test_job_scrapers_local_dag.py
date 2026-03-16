@@ -389,6 +389,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         job = SimpleNamespace(
             id="j1",
             name="Engineer",
+            jobCategory="software_engineer",
             detailsUrl="https://x",
             applyUrl="https://y",
             locations=[SimpleNamespace(city="Seattle", state="WA", country="USA")],
@@ -404,6 +405,137 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         self.assertEqual(out["jobs_written"], 1)
         self.assertEqual(out["job_ids"], ["j1"])
         upsert_jobs.assert_called_once()
+        self.assertEqual(
+            upsert_jobs.call_args.kwargs["rows"][0]["job_type"], "software_engineer"
+        )
+
+    def test_task_get_jobs_page_filters_apple_non_target_roles(self) -> None:
+        fn = self.tasks["jobs_get_page"].fn
+        kept_job = SimpleNamespace(
+            id="a1",
+            name="Software Engineer",
+            jobCategory="software_engineer",
+            detailsUrl="https://x/a1",
+            applyUrl="https://y/a1",
+            locations=[],
+            postedTs=None,
+        )
+        dropped_job = SimpleNamespace(
+            id="a2",
+            name="Designer",
+            jobCategory=None,
+            detailsUrl="https://x/a2",
+            applyUrl="https://y/a2",
+            locations=[],
+            postedTs=None,
+        )
+        response = SimpleNamespace(jobs=[kept_job, dropped_job], error=None)
+        client = SimpleNamespace(get_jobs=lambda page: response)
+        with patch.object(self.mod, "build_client", return_value=client), patch.object(
+            self.mod, "ProxyManagementClient"
+        ), patch.object(self.mod, "upsert_jobs") as upsert_jobs:
+            out = fn({"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}, "apple", 1)
+        self.assertEqual(out["jobs_seen"], 2)
+        self.assertEqual(out["jobs_written"], 1)
+        self.assertEqual(out["job_ids"], ["a1"])
+        self.assertEqual(len(upsert_jobs.call_args.kwargs["rows"]), 1)
+        self.assertEqual(upsert_jobs.call_args.kwargs["rows"][0]["external_job_id"], "a1")
+
+    def test_task_get_jobs_page_filters_google_non_target_roles(self) -> None:
+        fn = self.tasks["jobs_get_page"].fn
+        kept_job = SimpleNamespace(
+            id="g1",
+            name="Data Scientist",
+            jobCategory="data_scientist",
+            detailsUrl="https://x/g1",
+            applyUrl="https://y/g1",
+            locations=[],
+            postedTs=None,
+        )
+        dropped_job = SimpleNamespace(
+            id="g2",
+            name="Technical Program Manager",
+            jobCategory=None,
+            detailsUrl="https://x/g2",
+            applyUrl="https://y/g2",
+            locations=[],
+            postedTs=None,
+        )
+        response = SimpleNamespace(jobs=[kept_job, dropped_job], error=None)
+        client = SimpleNamespace(get_jobs=lambda page: response)
+        with patch.object(self.mod, "build_client", return_value=client), patch.object(
+            self.mod, "ProxyManagementClient"
+        ), patch.object(self.mod, "upsert_jobs") as upsert_jobs:
+            out = fn({"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}, "google", 1)
+        self.assertEqual(out["jobs_seen"], 2)
+        self.assertEqual(out["jobs_written"], 1)
+        self.assertEqual(out["job_ids"], ["g1"])
+        self.assertEqual(len(upsert_jobs.call_args.kwargs["rows"]), 1)
+        self.assertEqual(upsert_jobs.call_args.kwargs["rows"][0]["external_job_id"], "g1")
+
+    def test_task_get_jobs_page_filters_meta_non_target_roles(self) -> None:
+        fn = self.tasks["jobs_get_page"].fn
+        kept_job = SimpleNamespace(
+            id="m1",
+            name="Applied Scientist",
+            jobCategory="data_scientist",
+            detailsUrl="https://x/m1",
+            applyUrl="https://y/m1",
+            locations=[],
+            postedTs=None,
+        )
+        dropped_job = SimpleNamespace(
+            id="m2",
+            name="Recruiter",
+            jobCategory=None,
+            detailsUrl="https://x/m2",
+            applyUrl="https://y/m2",
+            locations=[],
+            postedTs=None,
+        )
+        response = SimpleNamespace(jobs=[kept_job, dropped_job], error=None)
+        client = SimpleNamespace(get_jobs=lambda page: response)
+        with patch.object(self.mod, "build_client", return_value=client), patch.object(
+            self.mod, "ProxyManagementClient"
+        ), patch.object(self.mod, "upsert_jobs") as upsert_jobs:
+            out = fn({"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}, "meta", 1)
+        self.assertEqual(out["jobs_seen"], 2)
+        self.assertEqual(out["jobs_written"], 1)
+        self.assertEqual(out["job_ids"], ["m1"])
+        self.assertEqual(len(upsert_jobs.call_args.kwargs["rows"]), 1)
+        self.assertEqual(upsert_jobs.call_args.kwargs["rows"][0]["external_job_id"], "m1")
+
+    def test_task_get_jobs_page_filters_microsoft_non_target_roles(self) -> None:
+        fn = self.tasks["jobs_get_page"].fn
+        kept_job = SimpleNamespace(
+            id="ms1",
+            name="Applied Scientist",
+            jobCategory="data_scientist",
+            detailsUrl="https://x/ms1",
+            applyUrl="https://y/ms1",
+            locations=[],
+            postedTs=None,
+        )
+        dropped_job = SimpleNamespace(
+            id="ms2",
+            name="Customer Success Manager",
+            jobCategory=None,
+            detailsUrl="https://x/ms2",
+            applyUrl="https://y/ms2",
+            locations=[],
+            postedTs=None,
+        )
+        response = SimpleNamespace(jobs=[kept_job, dropped_job], error=None)
+        client = SimpleNamespace(get_jobs=lambda page: response)
+        with patch.object(self.mod, "build_client", return_value=client), patch.object(
+            self.mod, "ProxyManagementClient"
+        ), patch.object(self.mod, "upsert_jobs") as upsert_jobs:
+            out = fn({"run_id": "r1", "version_ts": "2026-01-01T00:00:00+00:00"}, "microsoft", 1)
+        self.assertEqual(out["jobs_seen"], 2)
+        self.assertEqual(out["jobs_written"], 1)
+        self.assertEqual(out["job_ids"], ["ms1"])
+        self.assertEqual(len(upsert_jobs.call_args.kwargs["rows"]), 1)
+        self.assertEqual(upsert_jobs.call_args.kwargs["rows"][0]["external_job_id"], "ms1")
 
     def test_task_get_jobs_page_missing_or_empty_job_id_raises(self) -> None:
         fn = self.tasks["jobs_get_page"].fn
@@ -704,6 +836,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             {
                 "company": "amazon",
                 "external_job_id": "j1",
+                "job_type": "software_engineer",
                 "title": "Role",
                 "details_url": "https://details",
                 "apply_url": "https://apply",
@@ -718,6 +851,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             {
                 "company": "amazon",
                 "external_job_id": "j2",
+                "job_type": "machine_learning_engineer",
                 "title": "Skip",
                 "details_url": "https://details-2",
                 "apply_url": "https://apply-2",
@@ -732,6 +866,7 @@ class JobScrapersLocalDagTest(unittest.TestCase):
             {
                 "company": "amazon",
                 "external_job_id": "j3",
+                "job_type": "manager",
                 "title": "Skipped",
                 "details_url": None,
                 "apply_url": None,
@@ -759,9 +894,11 @@ class JobScrapersLocalDagTest(unittest.TestCase):
         self.assertTrue(out["es_ready"])
         bulk_call = es_client.bulk_index.call_args.kwargs["docs"]
         self.assertEqual(len(bulk_call), 2)
+        self.assertEqual(bulk_call[0]["_source"]["job_type"], "software_engineer")
         self.assertEqual(bulk_call[0]["_source"]["skills"], ["Python"])
         self.assertEqual(bulk_call[0]["_source"]["job_description_embedding"], [1.0, 2.0])
         self.assertEqual(bulk_call[0]["_source"]["posted_ts"], "2026-01-02T00:00:00+00:00")
+        self.assertEqual(bulk_call[1]["_source"]["job_type"], "machine_learning_engineer")
         self.assertEqual(bulk_call[1]["_source"]["skills"], [])
         self.assertEqual(bulk_call[1]["_source"]["job_description_embedding"], [])
         self.assertIsNone(bulk_call[1]["_source"]["posted_ts"])

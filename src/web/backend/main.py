@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from psycopg.rows import dict_row
 
+from common.job_taxonomy import ALLOWED_JOB_CATEGORIES
 from common.request_policy import RequestPolicy
 from features.client import FeaturesClient
 from scrapers.common.elasticsearch import ElasticsearchClient
@@ -81,8 +82,6 @@ _ES_QUERY_CANDIDATES = _env_int("JOBSEARCH_ES_QUERY_CANDIDATES", default=100, mi
 _ES_KNN_CANDIDATES = _env_int("JOBSEARCH_ES_KNN_CANDIDATES", default=100, minimum=1)
 _ES_KNN_NUM_CANDIDATES = _env_int("JOBSEARCH_ES_KNN_NUM_CANDIDATES", default=200, minimum=1)
 _RRF_K = _env_int("JOBSEARCH_ES_RRF_K", default=60, minimum=1)
-
-
 def _db_conn() -> psycopg.Connection[Any]:
     return psycopg.connect(_DB_URL, row_factory=dict_row)
 
@@ -163,6 +162,15 @@ def _normalize_company_filter(value: str | None) -> str | None:
 def _normalize_posted_within(value: str | None) -> str | None:
     normalized = str(value or "").strip().lower()
     if normalized in {"24h", "7d", "30d"}:
+        return normalized
+    return None
+
+
+def _normalize_job_type(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized or normalized == "__all__":
+        return None
+    if normalized in ALLOWED_JOB_CATEGORIES:
         return normalized
     return None
 
@@ -266,16 +274,18 @@ def _job_metadata_from_hit(hit: dict[str, Any]) -> JobMetadata:
     )
 
 
-def _search_filters(company: str | None, posted_within: str | None) -> list[dict[str, Any]]:
+def _search_filters(company: str | None, posted_within: str | None, job_type: str | None) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
     if company:
         filters.append({"term": {"company": company}})
+    if job_type:
+        filters.append({"term": {"job_type": job_type}})
     if posted_within:
         filters.append({"range": {"posted_ts": {"gte": f"now-{posted_within}"}}})
     return filters
 
 
-def _browse_jobs(company: str | None, *, posted_within: str | None, page: int) -> tuple[list[JobMetadata], int, bool]:
+def _browse_jobs(company: str | None, *, posted_within: str | None, job_type: str | None, page: int) -> tuple[list[JobMetadata], int, bool]:
     offset = (page - 1) * _PAGE_SIZE
     body = {
         "track_total_hits": True,
@@ -287,7 +297,7 @@ def _browse_jobs(company: str | None, *, posted_within: str | None, page: int) -
         ],
         "query": {
             "bool": {
-                "filter": _search_filters(company, posted_within),
+                "filter": _search_filters(company, posted_within, job_type),
             }
         },
     }
@@ -335,8 +345,9 @@ def _search_jobs(
     query: str,
     page: int,
     posted_within: str | None,
+    job_type: str | None,
 ) -> tuple[list[JobMetadata], int, bool]:
-    filters = _search_filters(company, posted_within)
+    filters = _search_filters(company, posted_within, job_type)
 
     query_embedding = _query_embedding(query)
     bm25_body = {
@@ -442,6 +453,7 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
     page = max(1, int(payload.pagination_index))
     query = str(payload.query or "").strip()
     posted_within = _normalize_posted_within(payload.posted_within)
+    job_type = _normalize_job_type(payload.job_type)
 
     try:
         if query:
@@ -450,9 +462,15 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
                 query=query,
                 page=page,
                 posted_within=posted_within,
+                job_type=job_type,
             )
         else:
-            jobs, total_results, has_next_page = _browse_jobs(company, posted_within=posted_within, page=page)
+            jobs, total_results, has_next_page = _browse_jobs(
+                company,
+                posted_within=posted_within,
+                job_type=job_type,
+                page=page,
+            )
     except requests.exceptions.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Search index unavailable: {exc}") from exc
 

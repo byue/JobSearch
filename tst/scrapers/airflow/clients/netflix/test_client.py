@@ -184,8 +184,9 @@ class NetflixClientTest(unittest.TestCase):
 
     def test_metadata_and_url_helpers(self) -> None:
         client = self._client()
-        md = client._parse_job_metadata({"id": "1", "posting_name": "Eng", "locations": ["Seattle, WA, USA"]})
+        md = client._parse_job_metadata({"id": "1", "posting_name": "Software Engineer", "locations": ["Seattle, WA, USA"]})
         self.assertEqual(md.id, "1")
+        self.assertEqual(md.jobCategory, "software_engineer")
         self.assertIsNotNone(md.detailsUrl)
         with self.assertRaises(ValueError):
             client._parse_job_metadata({"id": " "})
@@ -259,6 +260,18 @@ class NetflixClientTest(unittest.TestCase):
         self.assertEqual(client._build_details_url({"id": None}), f"{client.base_url}{client.CAREERS_PATH}")
         self.assertEqual(client._extract_locations({"locations": ["State, Country"]})[0].state, "State")
         self.assertIsNone(client._extract_job_description([" "]))
+
+    def test_get_jobs_uses_default_search_params(self) -> None:
+        client = self._client()
+        with patch.object(client, "_get_jobs_payload", return_value={"positions": [], "count": 0}) as get_jobs_payload:
+            client.get_jobs(page=1)
+        self.assertEqual(
+            get_jobs_payload.call_args.kwargs["params"],
+            [
+                ("domain", "netflix.com"),
+                ("start", "0"),
+            ],
+        )
 
 
 if __name__ == "__main__":

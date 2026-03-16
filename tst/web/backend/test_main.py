@@ -169,6 +169,9 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._normalize_company_filter(" Amazon "), "amazon")
         self.assertEqual(m._normalize_posted_within(" 7d "), "7d")
         self.assertEqual(m._normalize_posted_within("bad"), None)
+        self.assertEqual(m._normalize_job_type(" software_engineer "), "software_engineer")
+        self.assertIsNone(m._normalize_job_type("__all__"))
+        self.assertIsNone(m._normalize_job_type("bad"))
 
         with patch.object(m, "_validate_company_in_run", return_value="amazon") as validate_company:
             self.assertIsNone(m._resolve_company_filter("run-1", None))
@@ -199,9 +202,16 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._total_hits_from_response({"hits": {"total": {"value": 3}}}), 3)
         self.assertEqual(m._total_hits_from_response({"hits": {"total": 4}}), 4)
 
-        self.assertEqual(m._search_filters(None, None), [])
-        self.assertEqual(m._search_filters("amazon", None), [{"term": {"company": "amazon"}}])
-        self.assertEqual(m._search_filters("amazon", "7d"), [{"term": {"company": "amazon"}}, {"range": {"posted_ts": {"gte": "now-7d"}}}])
+        self.assertEqual(m._search_filters(None, None, None), [])
+        self.assertEqual(m._search_filters("amazon", None, None), [{"term": {"company": "amazon"}}])
+        self.assertEqual(
+            m._search_filters("amazon", "7d", "software_engineer"),
+            [
+                {"term": {"company": "amazon"}},
+                {"term": {"job_type": "software_engineer"}},
+                {"range": {"posted_ts": {"gte": "now-7d"}}},
+            ],
+        )
 
     def test_job_metadata_and_browse_helpers(self) -> None:
         m = self.module
@@ -232,13 +242,20 @@ class BackendMainTest(unittest.TestCase):
         es_client = Mock()
         es_client.search.return_value = {"hits": {"hits": [source_hit], "total": {"value": 2}}}
         with patch.object(m, "_es_client", return_value=es_client):
-            jobs, total, has_next = m._browse_jobs("amazon", posted_within="7d", page=1)
+            jobs, total, has_next = m._browse_jobs("amazon", posted_within="7d", job_type="software_engineer", page=1)
         self.assertEqual(len(jobs), 1)
         self.assertEqual(total, 2)
         self.assertTrue(has_next)
         body = es_client.search.call_args.kwargs["body"]
         self.assertEqual(body["sort"][0]["posted_ts"]["order"], "desc")
-        self.assertEqual(body["query"]["bool"]["filter"], [{"term": {"company": "amazon"}}, {"range": {"posted_ts": {"gte": "now-7d"}}}])
+        self.assertEqual(
+            body["query"]["bool"]["filter"],
+            [
+                {"term": {"company": "amazon"}},
+                {"term": {"job_type": "software_engineer"}},
+                {"range": {"posted_ts": {"gte": "now-7d"}}},
+            ],
+        )
 
     def test_query_embedding_rrf_and_search_helpers(self) -> None:
         m = self.module
@@ -278,14 +295,22 @@ class BackendMainTest(unittest.TestCase):
             },
         ]
         with patch.object(m, "_query_embedding", return_value=[0.1, -0.2]), patch.object(m, "_es_client", return_value=es_client):
-            jobs, total, has_next = m._search_jobs("amazon", query="python", page=1, posted_within=None)
+            jobs, total, has_next = m._search_jobs(
+                "amazon",
+                query="python",
+                page=1,
+                posted_within=None,
+                job_type="data_scientist",
+            )
         self.assertEqual(len(jobs), 2)
         self.assertEqual(total, 2)
         self.assertFalse(has_next)
         bm25_body = es_client.search.call_args_list[0].kwargs["body"]
         knn_body = es_client.search.call_args_list[1].kwargs["body"]
         self.assertEqual(bm25_body["query"]["bool"]["must"][0]["multi_match"]["query"], "python")
+        self.assertEqual(bm25_body["query"]["bool"]["filter"], [{"term": {"company": "amazon"}}, {"term": {"job_type": "data_scientist"}}])
         self.assertEqual(knn_body["knn"]["query_vector"], [0.1, -0.2])
+        self.assertEqual(knn_body["knn"]["filter"], [{"term": {"company": "amazon"}}, {"term": {"job_type": "data_scientist"}}])
 
     def test_startup_and_shutdown_events(self) -> None:
         m = self.module
@@ -342,7 +367,7 @@ class BackendMainTest(unittest.TestCase):
     def test_get_jobs(self) -> None:
         m = self.module
         request = _make_request()
-        payload = m.GetJobsRequest(company="amazon", pagination_index=1)
+        payload = m.GetJobsRequest(company="amazon", job_type="software_engineer", pagination_index=1)
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
@@ -385,16 +410,16 @@ class BackendMainTest(unittest.TestCase):
             "_search_jobs",
             return_value=([], 0, False),
         ) as search_jobs:
-            payload = m.GetJobsRequest(company="amazon", query="python", pagination_index=1)
+            payload = m.GetJobsRequest(company="amazon", query="python", job_type="manager", pagination_index=1)
             m.get_jobs(payload, request)
-        search_jobs.assert_called_once_with("amazon", query="python", page=1, posted_within=None)
+        search_jobs.assert_called_once_with("amazon", query="python", page=1, posted_within=None, job_type="manager")
         self.assertEqual(response.jobs[0].detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
         self.assertEqual(response.jobs[0].applyUrl, "https://www.amazon.jobs/applicant/jobs/job-1/apply")
 
     def test_get_jobs_search_and_all_companies(self) -> None:
         m = self.module
         request = _make_request()
-        payload = m.GetJobsRequest(company=None, query="python", pagination_index=1)
+        payload = m.GetJobsRequest(company=None, query="python", job_type="data_scientist", pagination_index=1)
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_search_jobs", return_value=([], 0, False)
@@ -410,7 +435,7 @@ class BackendMainTest(unittest.TestCase):
     def test_get_jobs_handles_search_backend_failure(self) -> None:
         m = self.module
         request = _make_request()
-        payload = m.GetJobsRequest(company=None, pagination_index=1)
+        payload = m.GetJobsRequest(company=None, job_type="manager", pagination_index=1)
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_browse_jobs", side_effect=requests.exceptions.RequestException("boom")
         ):

@@ -28,6 +28,7 @@ class AmazonJobsClient(JobsClient):
     PAGE_SIZE = 10
     SEARCH_POLICY_KEY = "search"
     DETAILS_POLICY_KEY = "details"
+    CATEGORY_FILTERS: tuple[str, ...] = ("software-development", "machine-learning-science")
 
     def __init__(
         self,
@@ -63,6 +64,7 @@ class AmazonJobsClient(JobsClient):
                 ("offset", str(resolved_offset)),
                 ("result_limit", str(self.PAGE_SIZE)),
                 ("sort", "relevant"),
+                *[("category[]", category) for category in self.CATEGORY_FILTERS],
             ],
             request_policy=self.get_request_policy(self.SEARCH_POLICY_KEY),
         )
@@ -80,7 +82,12 @@ class AmazonJobsClient(JobsClient):
                     f"Unexpected Amazon API payload for search.jobs[{index}]: "
                     f"expected object, got {type(item).__name__}"
                 )
-            jobs.append(parse_job_metadata(payload=item, base_url=self.base_url))
+            jobs.append(
+                parse_job_metadata(
+                    payload=item,
+                    base_url=self.base_url,
+                )
+            )
 
         total_results = to_int(payload.get("hits"))
         if isinstance(total_results, int):

@@ -7,6 +7,7 @@ import re
 import urllib.parse
 from typing import Any
 
+from common.job_taxonomy import infer_job_category_from_title
 from scrapers.airflow.clients.common.html_text import extract_text
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
@@ -67,6 +68,7 @@ def parse_job_metadata(*, row: list[Any], page: int, base_url: str, results_path
         id=job_id or None,
         name=name,
         company="google",
+        jobCategory=infer_job_category_from_title(title=name),
         locations=to_locations(standardized_locations),
         postedTs=posted_ts,
         applyUrl=apply_url,

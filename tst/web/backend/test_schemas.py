@@ -24,6 +24,7 @@ class SchemasTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GetJobsRequest(company="amazon", pagination_index=0)
         self.assertEqual(GetJobsRequest(company=None, query="python").query, "python")
+        self.assertEqual(GetJobsRequest(company=None, job_type="software_engineer").job_type, "software_engineer")
 
     def test_job_metadata_and_details_schema(self) -> None:
         location = Location(country="US", state="CA", city="SF")
@@ -32,6 +33,7 @@ class SchemasTest(unittest.TestCase):
             runId="run-1",
             name="Role",
             company="amazon",
+            jobCategory="software_engineer",
             locations=[location],
             postedTs=123,
             applyUrl="https://apply",
@@ -39,6 +41,7 @@ class SchemasTest(unittest.TestCase):
         )
         self.assertEqual(metadata.locations[0].country, "US")
         self.assertEqual(metadata.runId, "run-1")
+        self.assertEqual(metadata.jobCategory, "software_engineer")
 
         details = JobDetailsSchema(
             jobDescription="desc",

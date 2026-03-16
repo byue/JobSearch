@@ -51,6 +51,16 @@ export function normalizePostedWithin(value) {
   return normalized === "24h" || normalized === "7d" || normalized === "30d" ? normalized : "";
 }
 
+export function normalizeJobType(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "software_engineer" ||
+    normalized === "machine_learning_engineer" ||
+    normalized === "data_scientist" ||
+    normalized === "manager"
+    ? normalized
+    : "";
+}
+
 export function formatPosted(ts) {
   if (!ts) {
     return "—";
@@ -148,6 +158,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
   const [postedWithin, setPostedWithin] = useState("");
+  const [jobType, setJobType] = useState("");
+  const [appliedJobType, setAppliedJobType] = useState("");
   const [companiesLoading, setCompaniesLoading] = useState(false);
 
   const [positions, setPositions] = useState([]);
@@ -232,17 +244,20 @@ export default function App() {
     company = appliedCompany,
     query = appliedQuery,
     timeWindow = postedWithin,
+    targetJobType = appliedJobType,
     options = {}
   ) {
     const { scrollToResults = false } = options;
     const normalizedCompany = normalizeCompany(company);
     const normalizedQuery = String(query).trim();
     const normalizedPostedWithin = normalizePostedWithin(timeWindow);
+    const normalizedJobType = normalizeJobType(targetJobType);
 
     const normalizedSearchBody = {
       company: normalizedCompany === "__all__" ? null : normalizedCompany,
       query: normalizedQuery || null,
       posted_within: normalizedPostedWithin || null,
+      job_type: normalizedJobType || null,
       pagination_index: targetPage
     };
 
@@ -372,7 +387,7 @@ export default function App() {
       return;
     }
     hasLoadedInitialResultsRef.current = true;
-    void searchJobs(1, selectedCompany, appliedQuery, postedWithin);
+    void searchJobs(1, selectedCompany, appliedQuery, postedWithin, appliedJobType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCompany]);
 
@@ -412,7 +427,8 @@ export default function App() {
     const nextQuery = String(searchQuery).trim();
     setAppliedCompany(selectedCompany);
     setAppliedQuery(nextQuery);
-    void searchJobs(1, selectedCompany, nextQuery, postedWithin, { scrollToResults: true });
+    setAppliedJobType(jobType);
+    void searchJobs(1, selectedCompany, nextQuery, postedWithin, jobType, { scrollToResults: true });
   }
 
   return (
@@ -481,6 +497,19 @@ export default function App() {
                   <option value="30d">Last 30 days</option>
                 </select>
               </label>
+              <label className="field company-select-field">
+                <span>Job Type</span>
+                <select
+                  value={jobType}
+                  onChange={(event) => setJobType(event.target.value)}
+                >
+                  <option value="">All job types</option>
+                  <option value="software_engineer">Software Engineer</option>
+                  <option value="machine_learning_engineer">Machine Learning Engineer</option>
+                  <option value="data_scientist">Data Scientist</option>
+                  <option value="manager">Manager</option>
+                </select>
+              </label>
             </div>
           </form>
         </div>
@@ -547,7 +576,7 @@ export default function App() {
             type="button"
             disabled={!canGoPrevious}
             onClick={() =>
-              void searchJobs(page - 1, appliedCompany, appliedQuery, postedWithin, { scrollToResults: true })
+              void searchJobs(page - 1, appliedCompany, appliedQuery, postedWithin, appliedJobType, { scrollToResults: true })
             }
           >
             Previous
@@ -561,7 +590,7 @@ export default function App() {
             type="button"
             disabled={!canGoNext}
             onClick={() =>
-              void searchJobs(page + 1, appliedCompany, appliedQuery, postedWithin, { scrollToResults: true })
+              void searchJobs(page + 1, appliedCompany, appliedQuery, postedWithin, appliedJobType, { scrollToResults: true })
             }
           >
             Next

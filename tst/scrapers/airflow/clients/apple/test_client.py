@@ -15,11 +15,12 @@ class AppleClientTest(unittest.TestCase):
 
     def test_get_jobs_and_get_job_details(self) -> None:
         client = self._client()
-        search_html = 'window.__staticRouterHydrationData = JSON.parse("{\\"loaderData\\":{\\"search\\":{\\"searchResults\\":[{\\"positionId\\":\\"1\\",\\"postingTitle\\":\\"Eng\\",\\"transformedPostingTitle\\":\\"eng\\"}],\\"totalRecords\\":1}}}");'
+        search_html = 'window.__staticRouterHydrationData = JSON.parse("{\\"loaderData\\":{\\"search\\":{\\"searchResults\\":[{\\"positionId\\":\\"1\\",\\"postingTitle\\":\\"Software Engineer\\",\\"transformedPostingTitle\\":\\"software-engineer\\"}],\\"totalRecords\\":1}}}");'
         with patch.object(client.transport, "get_html", return_value=search_html):
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
+            self.assertEqual(out.jobs[0].jobCategory, "software_engineer")
 
         with patch.object(
             client.transport,
