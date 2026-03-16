@@ -61,6 +61,19 @@ export function normalizeJobType(value) {
     : "";
 }
 
+export function normalizeLocationFilter(value) {
+  return String(value ?? "").trim();
+}
+
+export function retainSelectedOption(selectedValue, options) {
+  return selectedValue && options.includes(selectedValue) ? selectedValue : "";
+}
+
+export function formatLocationFilterSummary(country, region, city) {
+  const parts = [city, region, country].filter((value) => typeof value === "string" && value.trim());
+  return parts.length > 0 ? parts.join(", ") : "Any location";
+}
+
 export function formatPosted(ts) {
   if (!ts) {
     return "—";
@@ -82,7 +95,7 @@ export function formatLocations(locations, maxItems = 2) {
         return item.trim();
       }
       if (item && typeof item === "object") {
-        const parts = [item.city, item.state, item.country]
+        const parts = [item.city, item.region || item.state, item.country]
           .map((value) => (typeof value === "string" ? value.trim() : ""))
           .filter(Boolean);
         return parts.join(", ");
@@ -152,14 +165,24 @@ export async function getJson(url) {
 
 export default function App() {
   const resultsSectionRef = useRef(null);
+  const locationFilterRef = useRef(null);
   const [companyOptions, setCompanyOptions] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState("");
   const [appliedCompany, setAppliedCompany] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
   const [postedWithin, setPostedWithin] = useState("");
+  const [appliedPostedWithin, setAppliedPostedWithin] = useState("");
   const [jobType, setJobType] = useState("");
   const [appliedJobType, setAppliedJobType] = useState("");
+  const [country, setCountry] = useState("");
+  const [region, setRegion] = useState("");
+  const [city, setCity] = useState("");
+  const [appliedCountry, setAppliedCountry] = useState("");
+  const [appliedRegion, setAppliedRegion] = useState("");
+  const [appliedCity, setAppliedCity] = useState("");
+  const [locationOptions, setLocationOptions] = useState({ countries: [], regions: [], cities: [] });
+  const [isLocationFilterOpen, setIsLocationFilterOpen] = useState(false);
   const [companiesLoading, setCompaniesLoading] = useState(false);
 
   const [positions, setPositions] = useState([]);
@@ -170,6 +193,7 @@ export default function App() {
   const [hasNextPage, setHasNextPage] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [isResultsOpen, setIsResultsOpen] = useState(false);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
@@ -178,7 +202,6 @@ export default function App() {
   const [activePosition, setActivePosition] = useState(null);
   const detailsCacheRef = useRef(new Map());
   const detailsAbortRef = useRef(null);
-  const hasLoadedInitialResultsRef = useRef(false);
 
   const companyLabelByValue = useMemo(
     () => Object.fromEntries(companyOptions.map((option) => [option.value, option.label])),
@@ -239,25 +262,83 @@ export default function App() {
     }
   }
 
+  async function loadLocationFilters(
+    companyValue = selectedCompany,
+    selectedCountry = country,
+    selectedRegion = region
+  ) {
+    const params = new URLSearchParams();
+    const normalizedCompany = normalizeCompany(companyValue);
+    const normalizedCountry = normalizeLocationFilter(selectedCountry);
+    const normalizedRegion = normalizeLocationFilter(selectedRegion);
+    const normalizedCity = normalizeLocationFilter(city);
+    if (normalizedCompany && normalizedCompany !== "__all__") {
+      params.set("company", normalizedCompany);
+    }
+    if (normalizedCountry) {
+      params.set("country", normalizedCountry);
+    }
+    if (normalizedRegion) {
+      params.set("region", normalizedRegion);
+    }
+    try {
+      const payload = await getJson(
+        `${API_BASE_URL}/get_location_filters${params.toString() ? `?${params.toString()}` : ""}`
+      );
+      const nextCountries = Array.isArray(payload?.countries)
+        ? payload.countries.filter((value) => typeof value === "string" && value.trim())
+        : [];
+      const nextRegions = Array.isArray(payload?.regions)
+        ? payload.regions.filter((value) => typeof value === "string" && value.trim())
+        : [];
+      const nextCities = Array.isArray(payload?.cities)
+        ? payload.cities.filter((value) => typeof value === "string" && value.trim())
+        : [];
+      setLocationOptions({
+        countries: nextCountries,
+        regions: nextRegions,
+        cities: nextCities
+      });
+      setCountry(retainSelectedOption(normalizedCountry, nextCountries));
+      setRegion(retainSelectedOption(normalizedRegion, nextRegions));
+      setCity(retainSelectedOption(normalizedCity, nextCities));
+    } catch (err) {
+      setLocationOptions({ countries: [], regions: [], cities: [] });
+      setCountry("");
+      setRegion("");
+      setCity("");
+      setErrorMessage(err instanceof Error ? err.message : "Failed to load location filters.");
+    }
+  }
+
   async function searchJobs(
     targetPage,
     company = appliedCompany,
     query = appliedQuery,
-    timeWindow = postedWithin,
+    timeWindow = appliedPostedWithin,
     targetJobType = appliedJobType,
+    targetCountry = appliedCountry,
+    targetRegion = appliedRegion,
+    targetCity = appliedCity,
     options = {}
   ) {
-    const { scrollToResults = false } = options;
+    const { openResultsOnSuccess = false } = options;
     const normalizedCompany = normalizeCompany(company);
     const normalizedQuery = String(query).trim();
     const normalizedPostedWithin = normalizePostedWithin(timeWindow);
     const normalizedJobType = normalizeJobType(targetJobType);
+    const normalizedCountry = normalizeLocationFilter(targetCountry);
+    const normalizedRegion = normalizeLocationFilter(targetRegion);
+    const normalizedCity = normalizeLocationFilter(targetCity);
 
     const normalizedSearchBody = {
       company: normalizedCompany === "__all__" ? null : normalizedCompany,
       query: normalizedQuery || null,
       posted_within: normalizedPostedWithin || null,
       job_type: normalizedJobType || null,
+      country: normalizedCountry || null,
+      region: normalizedRegion || null,
+      city: normalizedCity || null,
       pagination_index: targetPage
     };
 
@@ -279,12 +360,8 @@ export default function App() {
           ? payload.pagination_index
           : targetPage
       );
-      if (scrollToResults) {
-        requestAnimationFrame(() => {
-          if (typeof resultsSectionRef.current?.scrollIntoView === "function") {
-            resultsSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-          }
-        });
+      if (openResultsOnSuccess) {
+        setIsResultsOpen(true);
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "Search request failed.");
@@ -380,16 +457,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedCompany) {
+    if (companyOptions.length === 0) {
       return;
     }
-    if (hasLoadedInitialResultsRef.current) {
-      return;
-    }
-    hasLoadedInitialResultsRef.current = true;
-    void searchJobs(1, selectedCompany, appliedQuery, postedWithin, appliedJobType);
+    void loadLocationFilters(selectedCompany, country, region);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompany]);
+  }, [companyOptions.length, selectedCompany, country, region]);
 
   const activeCompanyLabel = companyLabelByValue[appliedCompany] || toTitleCase(appliedCompany);
   const totalPages =
@@ -422,13 +495,43 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isModalOpen]);
 
+  useEffect(() => {
+    if (!isLocationFilterOpen) {
+      return undefined;
+    }
+    const onPointerDown = (event) => {
+      if (locationFilterRef.current && !locationFilterRef.current.contains(event.target)) {
+        setIsLocationFilterOpen(false);
+      }
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setIsLocationFilterOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isLocationFilterOpen]);
+
   function submitSearch(event) {
     event.preventDefault();
     const nextQuery = String(searchQuery).trim();
     setAppliedCompany(selectedCompany);
     setAppliedQuery(nextQuery);
+    setAppliedPostedWithin(postedWithin);
     setAppliedJobType(jobType);
-    void searchJobs(1, selectedCompany, nextQuery, postedWithin, jobType, { scrollToResults: true });
+    setAppliedCountry(country);
+    setAppliedRegion(region);
+    setAppliedCity(city);
+    setIsLocationFilterOpen(false);
+    setIsResultsOpen(false);
+    void searchJobs(1, selectedCompany, nextQuery, postedWithin, jobType, country, region, city, {
+      openResultsOnSuccess: true
+    });
   }
 
   return (
@@ -442,7 +545,7 @@ export default function App() {
 
         <div className="hero-center">
           <h1>Tier Zero</h1>
-          <p className="hero-intro">Access the most selective roles at the world’s top companies.</p>
+          <p className="hero-intro">Access the most selective tech roles at the world’s top companies.</p>
 
           <form className="search-panel search-panel-centered" onSubmit={submitSearch}>
             <div className="search-shell search-shell-wide">
@@ -456,38 +559,38 @@ export default function App() {
                 />
               </label>
               <button className="btn btn-primary search-submit-btn" type="submit" disabled={isLoading}>
-                Search
+                {isLoading ? "Searching..." : "Search"}
               </button>
             </div>
-
-            <div className="chip-row" role="group" aria-label="Company filter">
-              {companiesLoading && companyOptions.length === 0 && (
-                <button className="chip chip-disabled" type="button" disabled>
-                  Loading
-                </button>
-              )}
-              {!companiesLoading && companyOptions.length === 0 && (
-                <button className="chip chip-disabled" type="button" disabled>
-                  No companies
-                </button>
-              )}
-              {companyOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`chip ${selectedCompany === option.value ? "chip-active" : ""}`}
-                  onClick={() => setSelectedCompany(option.value)}
-                  aria-pressed={selectedCompany === option.value}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-
             <div className="subfilters">
               <label className="field company-select-field">
-                <span>Posted</span>
                 <select
+                  aria-label="Company"
+                  value={selectedCompany}
+                  onChange={(event) => {
+                    setSelectedCompany(event.target.value);
+                    setCountry("");
+                    setRegion("");
+                    setCity("");
+                  }}
+                  disabled={companiesLoading || companyOptions.length === 0}
+                >
+                  {companiesLoading && companyOptions.length === 0 ? (
+                    <option value="">Loading</option>
+                  ) : null}
+                  {!companiesLoading && companyOptions.length === 0 ? (
+                    <option value="">No companies</option>
+                  ) : null}
+                  {companyOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field company-select-field">
+                <select
+                  aria-label="Posted"
                   value={postedWithin}
                   onChange={(event) => setPostedWithin(event.target.value)}
                 >
@@ -498,8 +601,8 @@ export default function App() {
                 </select>
               </label>
               <label className="field company-select-field">
-                <span>Job Type</span>
                 <select
+                  aria-label="Job Type"
                   value={jobType}
                   onChange={(event) => setJobType(event.target.value)}
                 >
@@ -510,93 +613,209 @@ export default function App() {
                   <option value="manager">Manager</option>
                 </select>
               </label>
+              <div className="field company-select-field location-filter-field" ref={locationFilterRef}>
+                <button
+                  type="button"
+                  className="location-filter-trigger"
+                  aria-label="Location"
+                  aria-expanded={isLocationFilterOpen}
+                  aria-controls="location-filter-panel"
+                  onClick={() => setIsLocationFilterOpen((previous) => !previous)}
+                >
+                  <span>{formatLocationFilterSummary(country, region, city)}</span>
+                </button>
+                {isLocationFilterOpen ? (
+                  <div className="location-filter-panel" id="location-filter-panel">
+                    <label className="field location-panel-field">
+                      <select
+                        aria-label="Country"
+                        value={country}
+                        onChange={(event) => {
+                          setCountry(event.target.value);
+                          setRegion("");
+                          setCity("");
+                        }}
+                      >
+                        <option value="">All countries</option>
+                        {locationOptions.countries.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {country ? (
+                      <label className="field location-panel-field">
+                        <select
+                          aria-label="Region"
+                          value={region}
+                          onChange={(event) => {
+                            setRegion(event.target.value);
+                            setCity("");
+                          }}
+                        >
+                          <option value="">All regions</option>
+                          {locationOptions.regions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    {region ? (
+                      <label className="field location-panel-field">
+                        <select
+                          aria-label="City"
+                          value={city}
+                          onChange={(event) => setCity(event.target.value)}
+                        >
+                          <option value="">All cities</option>
+                          {locationOptions.cities.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ) : null}
+                    <div className="location-panel-actions">
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          setCountry("");
+                          setRegion("");
+                          setCity("");
+                        }}
+                      >
+                        Clear location
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </form>
+          {errorMessage && !isResultsOpen && <div className="alert-error hero-alert">{errorMessage}</div>}
         </div>
       </header>
 
-      <section className="results-card" id="positions" ref={resultsSectionRef}>
-        <div className="results-header">
-          <div className="results-title">
-            <h2>Positions</h2>
-            <p>
-              {activeCompanyLabel ? `${activeCompanyLabel} • ` : ""}
-              {typeof totalResults === "number" ? `${totalResults.toLocaleString("en-US")} total jobs • ` : ""}
-              Page {page}
-              {typeof totalPages === "number" ? ` of ${totalPages.toLocaleString("en-US")}` : ""}
-            </p>
-          </div>
-        </div>
-
-        {errorMessage && <div className="alert-error">{errorMessage}</div>}
-
-        <div className="results-list" role="list">
-          {!isLoading &&
-            positions.map((position, index) => (
-              <button
-                key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
-                type="button"
-                role="listitem"
-                style={{ "--row-index": index }}
-                onClick={() => openDetails(position)}
-                className={`result-item ${position.id ? "row-clickable" : "row-disabled"}`}
-                disabled={!position.id}
-              >
-                <div className="result-item-main">
-                  <div className="result-item-topline">
-                    <span className="result-company">
-                      {companyLabelByValue[position.company] || toTitleCase(position.company) || "—"}
-                    </span>
-                    <span className="result-posted">{formatPosted(position.postedTs)}</span>
-                  </div>
-                  <h3 className="result-title">{position.name || "—"}</h3>
-                  <p className="result-location" title={formatLocations(position.locations, 99)}>
-                    {formatLocations(position.locations)}
-                  </p>
-                </div>
+      {isResultsOpen && (
+        <div className="results-backdrop" onClick={() => setIsResultsOpen(false)} role="presentation">
+          <section
+            className="results-panel"
+            id="positions"
+            ref={resultsSectionRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search results"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="results-header">
+              <div className="results-title">
+                <h2>Positions</h2>
+                <p>
+                  {activeCompanyLabel ? `${activeCompanyLabel} • ` : ""}
+                  {typeof totalResults === "number" ? `${totalResults.toLocaleString("en-US")} total jobs • ` : ""}
+                  Page {page}
+                  {typeof totalPages === "number" ? ` of ${totalPages.toLocaleString("en-US")}` : ""}
+                </p>
+              </div>
+              <button className="btn btn-ghost" type="button" onClick={() => setIsResultsOpen(false)}>
+                Close results
               </button>
-            ))}
-
-          {!isLoading && positions.length === 0 && (
-            <div className="empty-state" role="status">
-              No jobs found on this page.
             </div>
-          )}
 
-          {isLoading && (
-            <div className="loading-state" role="status">
-              Loading positions...
+            {errorMessage && <div className="alert-error">{errorMessage}</div>}
+
+            <div className="results-list" role="list">
+              {!isLoading &&
+                positions.map((position, index) => (
+                  <button
+                    key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
+                    type="button"
+                    role="listitem"
+                    style={{ "--row-index": index }}
+                    onClick={() => openDetails(position)}
+                    className={`result-item ${position.id ? "row-clickable" : "row-disabled"}`}
+                    disabled={!position.id}
+                  >
+                    <div className="result-item-main">
+                      <div className="result-item-topline">
+                        <span className="result-company">
+                          {companyLabelByValue[position.company] || toTitleCase(position.company) || "—"}
+                        </span>
+                        <span className="result-posted">{formatPosted(position.postedTs)}</span>
+                      </div>
+                      <h3 className="result-title">{position.name || "—"}</h3>
+                      <p className="result-location" title={formatLocations(position.locations, 99)}>
+                        {formatLocations(position.locations)}
+                      </p>
+                    </div>
+                  </button>
+                ))}
+
+              {!isLoading && positions.length === 0 && (
+                <div className="empty-state" role="status">
+                  No jobs found on this page.
+                </div>
+              )}
+
+              {isLoading && (
+                <div className="loading-state" role="status">
+                  Loading positions...
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        <div className="pagination">
-          <button
-            className="btn btn-ghost"
-            type="button"
-            disabled={!canGoPrevious}
-            onClick={() =>
-              void searchJobs(page - 1, appliedCompany, appliedQuery, postedWithin, appliedJobType, { scrollToResults: true })
-            }
-          >
-            Previous
-          </button>
-          <span>
-            Page {page}
-            {typeof totalPages === "number" ? ` of ${totalPages.toLocaleString("en-US")}` : ""}
-          </span>
-          <button
-            className="btn btn-ghost"
-            type="button"
-            disabled={!canGoNext}
-            onClick={() =>
-              void searchJobs(page + 1, appliedCompany, appliedQuery, postedWithin, appliedJobType, { scrollToResults: true })
-            }
-          >
-            Next
-          </button>
+            <div className="pagination">
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={!canGoPrevious}
+                onClick={() =>
+                  void searchJobs(
+                    page - 1,
+                    appliedCompany,
+                    appliedQuery,
+                    appliedPostedWithin,
+                    appliedJobType,
+                    appliedCountry,
+                    appliedRegion,
+                    appliedCity
+                  )
+                }
+              >
+                Previous
+              </button>
+              <span>
+                Page {page}
+                {typeof totalPages === "number" ? ` of ${totalPages.toLocaleString("en-US")}` : ""}
+              </span>
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={!canGoNext}
+                onClick={() =>
+                  void searchJobs(
+                    page + 1,
+                    appliedCompany,
+                    appliedQuery,
+                    appliedPostedWithin,
+                    appliedJobType,
+                    appliedCountry,
+                    appliedRegion,
+                    appliedCity
+                  )
+                }
+              >
+                Next
+              </button>
+            </div>
+          </section>
         </div>
-      </section>
+      )}
 
       {isModalOpen && (
         <div className="modal-backdrop" onClick={closeModal} role="presentation">

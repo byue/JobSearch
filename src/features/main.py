@@ -10,11 +10,15 @@ from typing import Any
 from fastapi import FastAPI
 
 from features.job_skills import DEFAULT_SPACY_MODEL, SkillExtractor
+from features.location_normalization import normalize_location
 from features.schemas import (
     ExtractJobSkillsRequest,
     ExtractJobSkillsResponse,
     ExtractQueryEmbeddingRequest,
     ExtractQueryEmbeddingResponse,
+    NormalizedLocation,
+    NormalizeLocationsRequest,
+    NormalizeLocationsResponse,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,4 +113,16 @@ def get_query_embedding(payload: ExtractQueryEmbeddingRequest) -> ExtractQueryEm
         status=200,
         error=None,
         embedding=_extract_embedding(payload.text),
+    )
+
+
+@app.post("/normalize_locations", response_model=NormalizeLocationsResponse)
+def normalize_locations(payload: NormalizeLocationsRequest) -> NormalizeLocationsResponse:
+    return NormalizeLocationsResponse(
+        status=200,
+        error=None,
+        locations=[
+            NormalizedLocation(city=city, region=state, country=country)
+            for city, state, country in (normalize_location(raw) for raw in payload.locations)
+        ],
     )

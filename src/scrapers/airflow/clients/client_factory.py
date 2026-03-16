@@ -12,6 +12,7 @@ from scrapers.airflow.clients.meta import MetaJobsClient
 from scrapers.airflow.clients.microsoft import MicrosoftJobsClient
 from scrapers.airflow.clients.netflix import NetflixJobsClient
 from common.request_policy import RequestPolicy
+from features.client import FeaturesClient
 from scrapers.proxy.proxy_management_client import ProxyManagementClient
 
 
@@ -30,6 +31,7 @@ def build_client(
     proxy_management_client: ProxyManagementClient,
     default_request_policy: RequestPolicy,
     endpoint_request_policies: Mapping[str, RequestPolicy] | None = None,
+    features_client: FeaturesClient | None = None,
 ) -> JobsClient:
     resolved_endpoint_policies = _resolve_endpoint_policies(
         company=company,
@@ -42,6 +44,7 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     if company == "apple":
         return AppleJobsClient(
@@ -49,6 +52,7 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     if company == "google":
         return GoogleJobsClient(
@@ -56,6 +60,7 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     if company == "meta":
         return MetaJobsClient(
@@ -63,6 +68,7 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     if company == "microsoft":
         return MicrosoftJobsClient(
@@ -70,6 +76,7 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     if company == "netflix":
         return NetflixJobsClient(
@@ -77,5 +84,6 @@ def build_client(
             default_request_policy=default_request_policy,
             endpoint_request_policies=resolved_endpoint_policies,
             proxy_management_client=proxy_management_client,
+            features_client=features_client,
         )
     raise ValueError(f"Unsupported company: {company}")

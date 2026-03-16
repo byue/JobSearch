@@ -14,14 +14,17 @@ from scrapers.airflow.clients.netflix.client import (
     _to_int,
     _to_optional_str,
 )
+from web.backend.schemas import Location
 
 
 class NetflixClientTest(unittest.TestCase):
     def _client(self) -> NetflixJobsClient:
+        self.features_client = Mock()
         return NetflixJobsClient(
             base_url="https://explore.jobs.netflix.net",
             default_request_policy=RequestPolicy(timeout_seconds=1.0, max_retries=1),
             proxy_management_client=Mock(),
+            features_client=self.features_client,
         )
 
     def test_scalar_helpers(self) -> None:
@@ -59,9 +62,13 @@ class NetflixClientTest(unittest.TestCase):
             "_get_jobs_payload",
             return_value={"positions": [{"id": "1", "posting_name": "Eng", "locations": ["Seattle, WA, USA"]}], "count": 1},
         ):
+            self.features_client.normalize_locations.return_value = {
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}]
+            }
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
+            self.features_client.normalize_locations.assert_called_once_with(locations=["Seattle, WA, USA"])
 
         with patch.object(
             client,
@@ -184,7 +191,10 @@ class NetflixClientTest(unittest.TestCase):
 
     def test_metadata_and_url_helpers(self) -> None:
         client = self._client()
-        md = client._parse_job_metadata({"id": "1", "posting_name": "Software Engineer", "locations": ["Seattle, WA, USA"]})
+        md = client._parse_job_metadata(
+            {"id": "1", "posting_name": "Software Engineer", "locations": ["Seattle, WA, USA"]},
+            locations=[Location(city="Seattle", state="Washington", country="United States")],
+        )
         self.assertEqual(md.id, "1")
         self.assertEqual(md.jobCategory, "software_engineer")
         self.assertIsNotNone(md.detailsUrl)
@@ -198,9 +208,9 @@ class NetflixClientTest(unittest.TestCase):
         self.assertIn("/job/1", client._build_details_url({"id": "1"}))
         self.assertEqual(client._build_details_url({"canonicalPositionUrl": "https://x"}), "https://x")
 
-        locs = client._extract_locations({"locations": ["Seattle, WA, USA"]})
-        self.assertEqual(locs[0].city, "Seattle")
-        self.assertEqual(client._extract_locations({"location": "Remote"})[0].country, "Remote")
+        locs = client._extract_location_strings({"locations": ["Seattle, WA, USA"]})
+        self.assertEqual(locs[0], "Seattle, WA, USA")
+        self.assertEqual(client._extract_location_strings({"location": "Remote"})[0], "Remote")
 
     def test_description_and_job_page_helpers(self) -> None:
         client = self._client()
@@ -248,21 +258,39 @@ class NetflixClientTest(unittest.TestCase):
         self.assertIsNone(client._extract_job_posting_ld_json('<script type="application/ld+json"></script>'))
         self.assertIsNone(client._extract_job_posting_ld_json('<script type="application/ld+json">{bad}</script>'))
         self.assertIsNone(client._find_job_posting_in_json_ld({"@graph": [1, {"@type": "Thing"}]}))
+
+    def test_normalize_locations_edge_cases(self) -> None:
+        client = self._client()
+        self.assertEqual(client._normalize_locations([]), [])
+        client.features_client = None
+        self.assertEqual(client._normalize_locations([["Seattle, WA, USA"]]), [[]])
+        client.features_client = self.features_client
+        self.assertEqual(client._normalize_locations([[]]), [[]])
+        self.features_client.normalize_locations.return_value = {"locations": ["bad"]}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Seattle, WA, USA"]])
+        self.features_client.normalize_locations.return_value = {"locations": []}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Seattle, WA, USA"]])
         self.assertIsNone(client._find_job_posting_in_json_ld([1, 2, 3]))
         self.assertIsNotNone(client._find_job_posting_in_json_ld({"@graph": [{"@type": "Thing"}, {"@type": "JobPosting"}]}))
         self.assertIsNotNone(client._find_job_posting_in_json_ld([{"@type": "Thing"}, {"@type": "JobPosting"}]))
 
     def test_more_metadata_branches(self) -> None:
         client = self._client()
-        md = client._parse_job_metadata({"id": 2, "name": "Eng", "location": "Remote", "t_update": 11})
+        md = client._parse_job_metadata(
+            {"id": 2, "name": "Eng", "location": "Remote", "t_update": 11},
+            locations=[Location(city="", state="", country="Remote")],
+        )
         self.assertEqual(md.id, "2")
         self.assertEqual(md.locations[0].country, "Remote")
         self.assertEqual(client._build_details_url({"id": None}), f"{client.base_url}{client.CAREERS_PATH}")
-        self.assertEqual(client._extract_locations({"locations": ["State, Country"]})[0].state, "State")
+        self.assertEqual(client._extract_location_strings({"locations": ["State, Country"]})[0], "State, Country")
         self.assertIsNone(client._extract_job_description([" "]))
 
     def test_get_jobs_uses_default_search_params(self) -> None:
         client = self._client()
+        self.features_client.normalize_locations.return_value = {"locations": []}
         with patch.object(client, "_get_jobs_payload", return_value={"positions": [], "count": 0}) as get_jobs_payload:
             client.get_jobs(page=1)
         self.assertEqual(
@@ -272,6 +300,17 @@ class NetflixClientTest(unittest.TestCase):
                 ("start", "0"),
             ],
         )
+
+    def test_get_jobs_validates_normalize_locations_payload(self) -> None:
+        client = self._client()
+        with patch.object(
+            client,
+            "_get_jobs_payload",
+            return_value={"positions": [{"id": "1", "posting_name": "Eng", "locations": ["Seattle, WA, USA"]}], "count": 1},
+        ):
+            self.features_client.normalize_locations.return_value = {"locations": "bad"}
+            with self.assertRaises(ValueError):
+                client.get_jobs(page=1)
 
 
 if __name__ == "__main__":

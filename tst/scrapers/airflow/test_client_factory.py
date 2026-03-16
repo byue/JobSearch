@@ -38,6 +38,7 @@ class ClientFactoryTest(unittest.TestCase):
     def test_build_client_returns_expected_client_type(self) -> None:
         default = self._default_policy()
         proxy_client = Mock()
+        features_client = Mock()
         with patch("scrapers.airflow.clients.client_factory.AmazonJobsClient", _DummyClient), patch(
             "scrapers.airflow.clients.client_factory.AppleJobsClient", _DummyClient
         ), patch("scrapers.airflow.clients.client_factory.GoogleJobsClient", _DummyClient), patch(
@@ -53,11 +54,14 @@ class ClientFactoryTest(unittest.TestCase):
                     proxy_management_client=proxy_client,
                     default_request_policy=default,
                     endpoint_request_policies={},
+                    features_client=features_client,
                 )
                 self.assertIsInstance(out, _DummyClient)
                 self.assertEqual(out.kwargs["base_url"], _DummyClient.BASE_URL)
                 self.assertIs(out.kwargs["proxy_management_client"], proxy_client)
                 self.assertIs(out.kwargs["default_request_policy"], default)
+                if company in {"amazon", "apple", "google", "meta", "microsoft", "netflix"}:
+                    self.assertIs(out.kwargs["features_client"], features_client)
 
     def test_build_client_unsupported_company(self) -> None:
         with self.assertRaises(ValueError):

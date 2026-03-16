@@ -50,6 +50,7 @@ graph TD
 6. `jobs_get_page` (mapped by `{company,page}`)
 - Fetches page jobs.
 - Writes/updates `jobs` rows immediately (incremental write).
+- Persists normalized `job_type` and `locations` JSON for each job.
 - Sets `is_missing_details=FALSE` on successful upsert for seen jobs.
 
 7. `jobs_copy_forward_details`

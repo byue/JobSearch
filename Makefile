@@ -30,7 +30,7 @@ PYENV_BIN ?= $(PYENV_ROOT)/bin/pyenv
 PYENV_INSTALL_FLAGS ?= -v -s
 PYENV_MAKE_JOBS ?= $(shell nproc)
 
-.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open minio-open kibana-open airflow-runs airflow-run-tasks airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
+.PHONY: help venv deps lint build test test-unit test-frontend test-integration test-all coverage coverage-html coverage-rc compile clean up down local-up local-down local-teardown teardown ps logs web-api features-api test-location-normalization db-list db-peek db-count-jobs db-failures proxy-state airflow-open web-open minio-open kibana-open airflow-runs airflow-run-tasks airflow-run-stop airflow-schedule-enable airflow-schedule-disable airflow-schedule-status schedule-enable schedule-disable schedule-status pyenv-setup-python
 
 help:
 	@echo "Targets:"
@@ -58,6 +58,8 @@ help:
 	@echo "  make ps                 - Show docker service status"
 	@echo "  make logs               - Tail docker service logs (all or SERVICE=<name>)"
 	@echo "  make web-api            - Run web backend CLI (ARGS='get-companies' etc.)"
+	@echo "  make features-api       - Run features service CLI (ARGS='get-job-skills --text ...' etc.)"
+	@echo "  make test-location-normalization - Call features CLI normalize-locations (ARGS='--location \"Seattle, WA, USA\"')"
 	@echo "  make db-list            - List scraper DB tables"
 	@echo "  make db-peek            - Print latest rows (TABLE=<name[,name]> LIMIT=<n> TRUNCATE_CHARS=<n>)"
 	@echo "  make db-count-jobs      - Count jobs and job_details (optional RUN_ID=<id>)"
@@ -146,7 +148,7 @@ _python-version-check:
 		fi; \
 	fi
 
-$(DEPS_STAMP): requirements-dev.txt requirements.txt src/web/backend/requirements.txt src/scrapers/proxy/requirements.txt src/scrapers/airflow/requirements.txt
+$(DEPS_STAMP): requirements-dev.txt requirements.txt src/web/backend/requirements.txt src/features/requirements.txt src/scrapers/proxy/requirements.txt src/scrapers/airflow/requirements.txt
 	$(VENV_PYTHON) -m pip install -r requirements-dev.txt
 	touch $(DEPS_STAMP)
 
@@ -233,6 +235,12 @@ logs:
 
 web-api: deps
 	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) src/web/backend/scripts/web_api_cli.py $(ARGS)
+
+features-api: deps
+	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) src/features/scripts/features_api_cli.py $(ARGS)
+
+test-location-normalization: deps
+	PYTHONPATH=$(PYTHONPATH) $(VENV_PYTHON) src/features/scripts/features_api_cli.py normalize-locations $(ARGS)
 
 db-peek:
 	@if [ -n "$(TABLE)" ]; then \

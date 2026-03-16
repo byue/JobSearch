@@ -4,7 +4,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import psycopg
 from fastapi.testclient import TestClient
@@ -117,15 +117,16 @@ class WebBackendIntegrationTest(unittest.TestCase):
             """
             INSERT INTO jobs (
               run_id, version_ts, company, external_job_id, title,
-              details_url, apply_url, city, state, country, skills, posted_ts, is_missing_details, updated_at
+              details_url, apply_url, locations, skills, posted_ts, is_missing_details, updated_at
             ) VALUES (
               %s, now(), %s, %s, %s,
-              %s, %s, 'Seattle', 'WA', 'US', %s::jsonb, %s, %s, now()
+              %s, %s, %s::jsonb, %s::jsonb, %s, %s, now()
             )
             ON CONFLICT (run_id, company, external_job_id) DO UPDATE
             SET title = EXCLUDED.title,
                 details_url = EXCLUDED.details_url,
                 apply_url = EXCLUDED.apply_url,
+                locations = EXCLUDED.locations,
                 skills = EXCLUDED.skills,
                 posted_ts = EXCLUDED.posted_ts,
                 is_missing_details = EXCLUDED.is_missing_details,
@@ -138,6 +139,7 @@ class WebBackendIntegrationTest(unittest.TestCase):
                 title,
                 details_url,
                 apply_url,
+                json.dumps([{"city": "Seattle", "region": "Washington", "country": "United States"}]),
                 json.dumps(skills or []),
                 posted_ts,
                 is_missing_details,
@@ -471,6 +473,103 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertEqual(details_body["skills"], ["Python", "SQL"])
         self.assertEqual(details_body["postedTs"], 1767225600)
         self.assertEqual(details_body["detailsUrl"], "https://www.amazon.jobs/en/jobs/contract_1")
+
+    def test_get_location_filters_returns_scoped_es_values(self) -> None:
+        run_id = "it_locations"
+        self._insert_run(run_id, db_ready=True)
+        self._insert_company(run_id, "amazon")
+        self._set_pointer(run_id)
+
+        def fake_es_search(*, index_name: str, body: dict) -> dict:
+            self.assertEqual(index_name, self.backend._ES_ALIAS)
+            self.assertEqual(body["size"], 0)
+
+            regions_filters = body["aggs"]["locations"]["aggs"]["regions"]["filter"]["bool"]["filter"]
+            cities_filters = body["aggs"]["locations"]["aggs"]["cities"]["filter"]["bool"]["filter"]
+
+            scoped_country = None
+            for item in regions_filters:
+                term = item.get("term") if isinstance(item, dict) else None
+                if isinstance(term, dict) and "locations.country" in term:
+                    scoped_country = term["locations.country"]
+
+            scoped_region = None
+            for item in cities_filters:
+                term = item.get("term") if isinstance(item, dict) else None
+                if isinstance(term, dict) and "locations.region" in term:
+                    scoped_region = term["locations.region"]
+
+            countries = [{"key": "Germany"}, {"key": "United States"}]
+            if scoped_country == "United States":
+                regions = [{"key": "California"}, {"key": "Washington"}]
+            else:
+                regions = [{"key": "Berlin"}, {"key": "California"}, {"key": "Washington"}]
+
+            if scoped_country == "United States" and scoped_region == "Washington":
+                cities = [{"key": "Seattle"}, {"key": "Tacoma"}]
+            elif scoped_country == "United States":
+                cities = [{"key": "Los Angeles"}, {"key": "Seattle"}, {"key": "Tacoma"}]
+            else:
+                cities = [{"key": "Berlin"}, {"key": "Los Angeles"}, {"key": "Seattle"}]
+
+            return {
+                "aggregations": {
+                    "locations": {
+                        "countries": {"values": {"buckets": countries}},
+                        "regions": {"values": {"buckets": regions}},
+                        "cities": {"values": {"buckets": cities}},
+                    }
+                }
+            }
+
+        fake_client = Mock()
+        fake_client.search.side_effect = fake_es_search
+
+        with patch.object(self.backend, "_es_client", return_value=fake_client):
+            resp = self.client.get("/get_location_filters", params={"company": "amazon"})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(
+                resp.json(),
+                {
+                    "status": 200,
+                    "error": None,
+                    "countries": ["Germany", "United States"],
+                    "regions": ["Berlin", "California", "Washington"],
+                    "cities": ["Berlin", "Los Angeles", "Seattle"],
+                },
+            )
+
+            resp_country = self.client.get(
+                "/get_location_filters",
+                params={"company": "amazon", "country": "United States"},
+            )
+            self.assertEqual(resp_country.status_code, 200)
+            self.assertEqual(
+                resp_country.json(),
+                {
+                    "status": 200,
+                    "error": None,
+                    "countries": ["Germany", "United States"],
+                    "regions": ["California", "Washington"],
+                    "cities": ["Los Angeles", "Seattle", "Tacoma"],
+                },
+            )
+
+            resp_region = self.client.get(
+                "/get_location_filters",
+                params={"company": "amazon", "country": "United States", "region": "Washington"},
+            )
+            self.assertEqual(resp_region.status_code, 200)
+            self.assertEqual(
+                resp_region.json(),
+                {
+                    "status": 200,
+                    "error": None,
+                    "countries": ["Germany", "United States"],
+                    "regions": ["California", "Washington"],
+                    "cities": ["Seattle", "Tacoma"],
+                },
+            )
 
 
 if __name__ == "__main__":

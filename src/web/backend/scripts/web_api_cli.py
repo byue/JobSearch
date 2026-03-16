@@ -50,7 +50,19 @@ def build_parser() -> argparse.ArgumentParser:
     get_jobs_parser = subparsers.add_parser("get-jobs", help="POST /get_jobs")
     get_jobs_parser.add_argument("--company", required=True)
     get_jobs_parser.add_argument("--page", type=int, default=1, help="Pagination index (>=1)")
+    get_jobs_parser.add_argument("--query", default=None, help="Optional search query")
+    get_jobs_parser.add_argument("--posted-within", default=None, help="Optional recency window, e.g. 24h, 7d, 30d")
     get_jobs_parser.add_argument("--job-type", default=None, help="Optional job type filter")
+    get_jobs_parser.add_argument("--country", default=None, help="Optional country filter")
+    get_jobs_parser.add_argument("--region", default=None, help="Optional region filter")
+    get_jobs_parser.add_argument("--city", default=None, help="Optional city filter")
+
+    get_location_filters_parser = subparsers.add_parser("get-location-filters", help="GET /get_location_filters")
+    get_location_filters_parser.add_argument("--company", default=None)
+    get_location_filters_parser.add_argument("--posted-within", default=None)
+    get_location_filters_parser.add_argument("--job-type", default=None)
+    get_location_filters_parser.add_argument("--country", default=None)
+    get_location_filters_parser.add_argument("--region", default=None)
 
     get_details_parser = subparsers.add_parser("get-job-details", help="POST /get_job_details")
     get_details_parser.add_argument("--company", required=True)
@@ -76,7 +88,12 @@ def main() -> int:
             page = max(1, int(args.page))
             payload = {
                 "company": args.company,
+                "query": args.query,
+                "posted_within": args.posted_within,
                 "job_type": args.job_type,
+                "country": args.country,
+                "region": args.region,
+                "city": args.city,
                 "pagination_index": page,
             }
             result = _request(
@@ -85,6 +102,28 @@ def main() -> int:
                 path="/get_jobs",
                 timeout_seconds=args.timeout_seconds,
                 payload=payload,
+            )
+        elif args.command == "get-location-filters":
+            query_params: list[tuple[str, str]] = []
+            for key, value in (
+                ("company", args.company),
+                ("posted_within", args.posted_within),
+                ("job_type", args.job_type),
+                ("country", args.country),
+                ("region", args.region),
+            ):
+                if value is not None:
+                    query_params.append((key, value))
+            path = "/get_location_filters"
+            if query_params:
+                from urllib.parse import urlencode
+
+                path = f"{path}?{urlencode(query_params)}"
+            result = _request(
+                method="GET",
+                base_url=args.api_url,
+                path=path,
+                timeout_seconds=args.timeout_seconds,
             )
         elif args.command == "get-job-details":
             payload = {

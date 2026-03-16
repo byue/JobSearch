@@ -6,6 +6,7 @@ This package contains company-specific scraper clients used by the Airflow DAG.
 - Provide a uniform client interface for all company integrations.
 - Normalize company-specific upstream payloads into shared schemas.
 - Route all HTTP calls through shared request/proxy helpers.
+- Reuse the features service for shared tasks such as location normalization.
 
 ## Structure
 - `common/`
@@ -31,6 +32,11 @@ Responses are typed by shared models in `src/web/backend/schemas.py`.
 - Clients use shared request helpers in `common/http_requests.py`.
 - Requests acquire proxies from proxy management by target host scope.
 - Per-endpoint request policies are supported via `RequestPolicy`.
+
+## Shared Location Normalization
+- Clients extract raw upstream location strings from company payloads.
+- Those strings are sent to the features service `POST /normalize_locations`.
+- The normalized response is mapped into shared `Location` objects before the client returns `GetJobsResponse`.
 
 ## Adding a New Company Client
 1. Add `src/scrapers/airflow/clients/<company>/client.py` and implement `JobsClient`.

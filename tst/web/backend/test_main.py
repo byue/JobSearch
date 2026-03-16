@@ -172,6 +172,9 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._normalize_job_type(" software_engineer "), "software_engineer")
         self.assertIsNone(m._normalize_job_type("__all__"))
         self.assertIsNone(m._normalize_job_type("bad"))
+        self.assertIsNone(m._normalize_location_filter(None))
+        self.assertIsNone(m._normalize_location_filter("__all__"))
+        self.assertEqual(m._normalize_location_filter(" Seattle "), "Seattle")
 
         with patch.object(m, "_validate_company_in_run", return_value="amazon") as validate_company:
             self.assertIsNone(m._resolve_company_filter("run-1", None))
@@ -192,7 +195,13 @@ class BackendMainTest(unittest.TestCase):
         self.assertIsNone(m._format_es_posted_ts(None))
 
         self.assertEqual(m._build_location_from_source({}), [])
-        locations = m._build_location_from_source({"city": "Seattle", "state": "WA", "country": "US"})
+        self.assertEqual(
+            m._build_location_from_source({"locations": [None, {"city": "", "region": "", "country": ""}]}),
+            [],
+        )
+        locations = m._build_location_from_source(
+            {"locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}]}
+        )
         self.assertEqual(len(locations), 1)
         self.assertEqual(locations[0].city, "Seattle")
 
@@ -212,6 +221,26 @@ class BackendMainTest(unittest.TestCase):
                 {"range": {"posted_ts": {"gte": "now-7d"}}},
             ],
         )
+        self.assertEqual(
+            m._search_filters("amazon", None, None, country="United States", region="Washington", city="Seattle"),
+            [
+                {"term": {"company": "amazon"}},
+                {
+                    "nested": {
+                        "path": "locations",
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"locations.country": "United States"}},
+                                    {"term": {"locations.region": "Washington"}},
+                                    {"term": {"locations.city": "Seattle"}},
+                                ]
+                            }
+                        },
+                    }
+                },
+            ],
+        )
 
     def test_job_metadata_and_browse_helpers(self) -> None:
         m = self.module
@@ -225,9 +254,7 @@ class BackendMainTest(unittest.TestCase):
                 "run_id": "run-1",
                 "title": "Role",
                 "company": "amazon",
-                "city": "Seattle",
-                "state": "WA",
-                "country": "US",
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
                 "posted_ts": "2026-01-01T00:00:00Z",
                 "apply_url": "https://apply",
                 "details_url": "https://details",
@@ -237,12 +264,20 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(job.id, "job-1")
         self.assertEqual(job.runId, "run-1")
         self.assertEqual(job.company, "amazon")
-        self.assertEqual(job.locations[0].country, "US")
+        self.assertEqual(job.locations[0].country, "United States")
 
         es_client = Mock()
         es_client.search.return_value = {"hits": {"hits": [source_hit], "total": {"value": 2}}}
         with patch.object(m, "_es_client", return_value=es_client):
-            jobs, total, has_next = m._browse_jobs("amazon", posted_within="7d", job_type="software_engineer", page=1)
+            jobs, total, has_next = m._browse_jobs(
+                "amazon",
+                posted_within="7d",
+                job_type="software_engineer",
+                country="United States",
+                region="Washington",
+                city="Seattle",
+                page=1,
+            )
         self.assertEqual(len(jobs), 1)
         self.assertEqual(total, 2)
         self.assertTrue(has_next)
@@ -254,6 +289,20 @@ class BackendMainTest(unittest.TestCase):
                 {"term": {"company": "amazon"}},
                 {"term": {"job_type": "software_engineer"}},
                 {"range": {"posted_ts": {"gte": "now-7d"}}},
+                {
+                    "nested": {
+                        "path": "locations",
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"locations.country": "United States"}},
+                                    {"term": {"locations.region": "Washington"}},
+                                    {"term": {"locations.city": "Seattle"}},
+                                ]
+                            }
+                        },
+                    }
+                },
             ],
         )
 
@@ -301,6 +350,9 @@ class BackendMainTest(unittest.TestCase):
                 page=1,
                 posted_within=None,
                 job_type="data_scientist",
+                country="United States",
+                region="Washington",
+                city="Seattle",
             )
         self.assertEqual(len(jobs), 2)
         self.assertEqual(total, 2)
@@ -308,9 +360,55 @@ class BackendMainTest(unittest.TestCase):
         bm25_body = es_client.search.call_args_list[0].kwargs["body"]
         knn_body = es_client.search.call_args_list[1].kwargs["body"]
         self.assertEqual(bm25_body["query"]["bool"]["must"][0]["multi_match"]["query"], "python")
-        self.assertEqual(bm25_body["query"]["bool"]["filter"], [{"term": {"company": "amazon"}}, {"term": {"job_type": "data_scientist"}}])
+        self.assertEqual(
+            bm25_body["query"]["bool"]["filter"],
+            [
+                {"term": {"company": "amazon"}},
+                {"term": {"job_type": "data_scientist"}},
+                {
+                    "nested": {
+                        "path": "locations",
+                        "query": {
+                            "bool": {
+                                "filter": [
+                                    {"term": {"locations.country": "United States"}},
+                                    {"term": {"locations.region": "Washington"}},
+                                    {"term": {"locations.city": "Seattle"}},
+                                ]
+                            }
+                        },
+                    }
+                },
+            ],
+        )
         self.assertEqual(knn_body["knn"]["query_vector"], [0.1, -0.2])
-        self.assertEqual(knn_body["knn"]["filter"], [{"term": {"company": "amazon"}}, {"term": {"job_type": "data_scientist"}}])
+        self.assertEqual(knn_body["knn"]["filter"], bm25_body["query"]["bool"]["filter"])
+
+        es_client = Mock()
+        es_client.search.return_value = {
+            "aggregations": {
+                "locations": {
+                    "countries": {"values": {"buckets": [{"key": "United States"}]}},
+                    "regions": {"values": {"buckets": [{"key": "Washington"}]}},
+                    "cities": {"values": {"buckets": [{"key": "Seattle"}]}},
+                }
+            }
+        }
+        with patch.object(m, "_es_client", return_value=es_client):
+            countries, regions, cities = m._get_location_filters(
+                "amazon",
+                posted_within="7d",
+                job_type="software_engineer",
+                country="United States",
+                region="Washington",
+            )
+        self.assertEqual(countries, ["United States"])
+        self.assertEqual(regions, ["Washington"])
+        self.assertEqual(cities, ["Seattle"])
+        self.assertEqual(m._agg_bucket_keys({"a": []}, "a", "b"), [])
+        self.assertEqual(m._agg_bucket_keys({"a": [{"key": "x"}]}, "missing"), [])
+        self.assertEqual(m._agg_bucket_keys({"a": {"b": "bad"}}, "a", "b"), [])
+        self.assertEqual(m._agg_bucket_keys({"a": {"b": [1, {"key": "x"}, {"key": "  "}]}} , "a", "b"), ["x"])
 
     def test_startup_and_shutdown_events(self) -> None:
         m = self.module
@@ -410,9 +508,26 @@ class BackendMainTest(unittest.TestCase):
             "_search_jobs",
             return_value=([], 0, False),
         ) as search_jobs:
-            payload = m.GetJobsRequest(company="amazon", query="python", job_type="manager", pagination_index=1)
+            payload = m.GetJobsRequest(
+                company="amazon",
+                query="python",
+                job_type="manager",
+                country="United States",
+                region="Washington",
+                city="Seattle",
+                pagination_index=1,
+            )
             m.get_jobs(payload, request)
-        search_jobs.assert_called_once_with("amazon", query="python", page=1, posted_within=None, job_type="manager")
+        search_jobs.assert_called_once_with(
+            "amazon",
+            query="python",
+            page=1,
+            posted_within=None,
+            job_type="manager",
+            country="United States",
+            region="Washington",
+            city="Seattle",
+        )
         self.assertEqual(response.jobs[0].detailsUrl, "https://www.amazon.jobs/en/jobs/job-1")
         self.assertEqual(response.jobs[0].applyUrl, "https://www.amazon.jobs/applicant/jobs/job-1/apply")
 
@@ -431,6 +546,44 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(response.total_pages, 1)
         self.assertFalse(response.has_next_page)
         self.assertEqual(response.jobs, [])
+
+    def test_get_location_filters(self) -> None:
+        m = self.module
+        with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
+            m, "_validate_company_in_run", return_value="amazon"
+        ), patch.object(
+            m,
+            "_get_location_filters",
+            return_value=(["United States"], ["Washington"], ["Seattle"]),
+        ) as get_location_filters:
+            response = m.get_location_filters(
+                company="amazon",
+                posted_within="7d",
+                job_type="software_engineer",
+                country="United States",
+                region="Washington",
+            )
+        self.assertEqual(response.countries, ["United States"])
+        self.assertEqual(response.regions, ["Washington"])
+        self.assertEqual(response.cities, ["Seattle"])
+        get_location_filters.assert_called_once_with(
+            "amazon",
+            posted_within="7d",
+            job_type="software_engineer",
+            country="United States",
+            region="Washington",
+        )
+
+        with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
+            m, "_validate_company_in_run", return_value="amazon"
+        ), patch.object(
+            m,
+            "_get_location_filters",
+            side_effect=requests.exceptions.RequestException("boom"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                m.get_location_filters(company="amazon")
+        self.assertEqual(ctx.exception.status_code, 502)
 
     def test_get_jobs_handles_search_backend_failure(self) -> None:
         m = self.module

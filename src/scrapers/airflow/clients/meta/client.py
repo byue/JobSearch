@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
+from features.client import FeaturesClient
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.errors import RetryableUpstreamError
 from scrapers.airflow.clients.common.html_text import extract_text
@@ -134,6 +135,7 @@ class MetaJobsClient(JobsClient):
         default_request_policy: RequestPolicy,
         endpoint_request_policies: Mapping[str, RequestPolicy] | None = None,
         proxy_management_client: "ProxyManagementClient",
+        features_client: FeaturesClient | None = None,
     ) -> None:
         super().__init__(
             default_request_policy=default_request_policy,
@@ -141,6 +143,7 @@ class MetaJobsClient(JobsClient):
         )
         self.base_url = base_url.rstrip("/")
         self.proxy_management_client = proxy_management_client
+        self.features_client = features_client
 
     def get_jobs(self, *, page: int = 1) -> GetJobsResponse:
         """Fetch one Meta jobs page by 1-based index."""
@@ -156,13 +159,24 @@ class MetaJobsClient(JobsClient):
             )
 
         all_jobs: list[JobMetadata] = []
+        raw_location_batches: list[list[str]] = []
         for index, item in enumerate(all_jobs_raw):
             if not isinstance(item, Mapping):
                 raise ValueError(
                     "Unexpected Meta payload for results.data.job_search_with_featured_jobs.all_jobs"
                     f"[{index}]: expected object, got {type(item).__name__}"
                 )
-            all_jobs.append(self._parse_job_metadata(item))
+            raw_locations = item.get("locations")
+            raw_location_batches.append(
+                [value.strip() for value in raw_locations if isinstance(value, str) and value.strip()]
+                if isinstance(raw_locations, list)
+                else []
+            )
+
+        normalized_locations_by_job = self._normalize_locations(raw_location_batches)
+
+        for item, locations in zip(all_jobs_raw, normalized_locations_by_job):
+            all_jobs.append(self._parse_job_metadata(item, locations=locations))
 
         total_results = len(all_jobs)
         start_index = (page - 1) * self.PAGE_SIZE
@@ -305,20 +319,13 @@ class MetaJobsClient(JobsClient):
             detailsUrl=details_url,
         )
 
-    def _parse_job_metadata(self, payload: Mapping[str, Any]) -> JobMetadata:
+    def _parse_job_metadata(self, payload: Mapping[str, Any], locations: list[Location] | None = None) -> JobMetadata:
         raw_job_id = payload.get("id")
         job_id = str(raw_job_id).strip()
         if not job_id:
             raise ValueError("Unexpected Meta payload for job metadata: missing required field 'id'")
 
         name = _to_optional_str(payload.get("title"))
-        raw_locations = payload.get("locations")
-        standardized_locations = (
-            [value.strip() for value in raw_locations if isinstance(value, str) and value.strip()]
-            if isinstance(raw_locations, list)
-            else []
-        )
-
         details_url = f"{self.base_url}{self.JOBS_PATH}/{urllib.parse.quote(job_id)}/"
         apply_url = f"{self.base_url}/profile/create_application/{urllib.parse.quote(job_id)}"
         return JobMetadata(
@@ -326,11 +333,49 @@ class MetaJobsClient(JobsClient):
             name=name,
             company="meta",
             jobCategory=infer_job_category_from_title(title=name),
-            locations=self._to_locations(standardized_locations),
+            locations=list(locations or []),
             postedTs=None,
             detailsUrl=details_url,
             applyUrl=apply_url,
         )
+
+    def _normalize_locations(self, raw_location_batches: list[list[str]]) -> list[list[Location]]:
+        if not raw_location_batches:
+            return []
+        if self.features_client is None:
+            return [[] for _ in raw_location_batches]
+
+        flattened = [value for batch in raw_location_batches for value in batch]
+        if not flattened:
+            return [[] for _ in raw_location_batches]
+
+        payload = self.features_client.normalize_locations(locations=flattened)
+        raw_locations = payload.get("locations")
+        if not isinstance(raw_locations, list):
+            raise ValueError("Invalid normalize_locations payload")
+
+        normalized_flat: list[Location] = []
+        for item in raw_locations:
+            if not isinstance(item, Mapping):
+                raise ValueError("Invalid normalized location item")
+            normalized_flat.append(
+                Location(
+                    city=str(item.get("city", "") or "").strip(),
+                    state=str(item.get("region", "") or "").strip(),
+                    country=str(item.get("country", "") or "").strip(),
+                )
+            )
+
+        if len(normalized_flat) != len(flattened):
+            raise ValueError("Normalized location count mismatch")
+
+        out: list[list[Location]] = []
+        offset = 0
+        for batch in raw_location_batches:
+            count = len(batch)
+            out.append(normalized_flat[offset : offset + count])
+            offset += count
+        return out
 
     def _parse_job_details(self, *, payload: Mapping[str, Any]) -> JobDetailsSchema:
         description_html = self._extract_html_fragment(payload.get("description"))

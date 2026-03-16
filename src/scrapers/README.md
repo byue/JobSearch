@@ -15,6 +15,11 @@ This package contains the scraping pipeline and proxy subsystem used to collect 
 5. Consistency checks run.
 6. Run status is updated and DB pointer is published for succeeded runs.
 
+Location flow:
+- company clients extract raw upstream location strings
+- those strings are normalized through the features service
+- normalized location objects are stored on `jobs.locations`
+
 ## Data Model
 DB schema and initialization scripts are in:
 - `src/sql/init.sql`
@@ -22,6 +27,7 @@ DB schema and initialization scripts are in:
 - `src/sql/README.md`
 
 ## Docs
+- Features service: `src/features/README.md`
 - Airflow pipeline: `src/scrapers/airflow/README.md`
 - Airflow clients package: `src/scrapers/airflow/clients/README.md`
 - Proxy subsystem: `src/scrapers/proxy/README.md`

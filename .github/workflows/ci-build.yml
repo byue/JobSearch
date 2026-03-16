@@ -26,6 +26,7 @@ jobs:
             requirements.txt
             src/scrapers/airflow/requirements.txt
             src/scrapers/proxy/requirements.txt
+            src/features/requirements.txt
             src/web/backend/requirements.txt
 
       - name: Setup Node

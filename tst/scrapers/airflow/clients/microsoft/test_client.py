@@ -9,10 +9,12 @@ from scrapers.airflow.clients.microsoft.client import MicrosoftJobsClient
 
 class MicrosoftClientTest(unittest.TestCase):
     def _client(self) -> MicrosoftJobsClient:
+        self.features_client = Mock()
         return MicrosoftJobsClient(
             base_url="https://apply.careers.microsoft.com",
             default_request_policy=RequestPolicy(timeout_seconds=1.0, max_retries=1),
             proxy_management_client=Mock(),
+            features_client=self.features_client,
         )
 
     def test_get_jobs_and_details(self) -> None:
@@ -32,10 +34,14 @@ class MicrosoftClientTest(unittest.TestCase):
             },
         }
         with patch.object(client.transport, "get_json", return_value=search_payload):
+            self.features_client.normalize_locations.return_value = {
+                "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}]
+            }
             out = client.get_jobs(page=1)
             self.assertEqual(out.status, 200)
             self.assertEqual(len(out.jobs), 1)
             self.assertEqual(out.jobs[0].jobCategory, "software_engineer")
+            self.features_client.normalize_locations.assert_called_once_with(locations=["Seattle, WA, USA"])
 
         with patch.object(client.transport, "get_json", return_value={"status": 200, "data": {"jobDescription": "x"}}):
             details = client.get_job_details(job_id="1")
@@ -55,6 +61,37 @@ class MicrosoftClientTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.get_jobs(page=1)
         with patch.object(client.transport, "get_json", return_value={"data": {"positions": [1]}}):
+            with self.assertRaises(ValueError):
+                client.get_jobs(page=1)
+
+    def test_get_jobs_uses_only_standardized_locations_and_validates_normalizer(self) -> None:
+        client = self._client()
+        search_payload = {
+            "status": 200,
+            "data": {
+                "count": 1,
+                "positions": [
+                    {
+                        "id": "1",
+                        "name": "Software Engineer",
+                        "postedTs": 1700000000,
+                        "standardizedLocations": ["Tokyo, Tokyo, JP"],
+                        "locations": ["Japan, Tokyo-to, Tokyo"],
+                    }
+                ],
+            },
+        }
+        with patch.object(client.transport, "get_json", return_value=search_payload):
+            self.features_client.normalize_locations.return_value = {
+                "locations": [{"city": "Tokyo", "region": "Tokyo", "country": "Japan"}]
+            }
+            out = client.get_jobs(page=1)
+        self.features_client.normalize_locations.assert_called_once_with(locations=["Tokyo, Tokyo, JP"])
+        self.assertEqual(out.jobs[0].locations[0].country, "Japan")
+
+        self.features_client.normalize_locations.reset_mock()
+        with patch.object(client.transport, "get_json", return_value=search_payload):
+            self.features_client.normalize_locations.return_value = {"locations": "bad"}
             with self.assertRaises(ValueError):
                 client.get_jobs(page=1)
 
@@ -100,6 +137,20 @@ class MicrosoftClientTest(unittest.TestCase):
                 "Job 'missing-1' not found for company 'microsoft' url=https://apply.careers.microsoft.com/careers/job/missing-1",
             )
             self.assertIsNone(details.jobDescription)
+
+    def test_normalize_locations_edge_cases(self) -> None:
+        client = self._client()
+        self.assertEqual(client._normalize_locations([]), [])
+        client.features_client = None
+        self.assertEqual(client._normalize_locations([["Tokyo, Tokyo, JP"]]), [[]])
+        client.features_client = self.features_client
+        self.assertEqual(client._normalize_locations([[]]), [[]])
+        self.features_client.normalize_locations.return_value = {"locations": ["bad"]}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Tokyo, Tokyo, JP"]])
+        self.features_client.normalize_locations.return_value = {"locations": []}
+        with self.assertRaises(ValueError):
+            client._normalize_locations([["Tokyo, Tokyo, JP"]])
 
 
 if __name__ == "__main__":

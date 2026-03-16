@@ -6,11 +6,12 @@ import urllib.parse
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from features.client import FeaturesClient
 from scrapers.airflow.clients.apple import parser
 from scrapers.airflow.clients.apple.transport import AppleTransport
 from scrapers.airflow.clients.common.base import JobsClient
 from common.request_policy import RequestPolicy
-from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata
+from web.backend.schemas import GetJobDetailsResponse, GetJobsResponse, JobMetadata, Location
 
 if TYPE_CHECKING:
     from scrapers.proxy.proxy_management_client import ProxyManagementClient
@@ -35,6 +36,7 @@ class AppleJobsClient(JobsClient):
         default_request_policy: RequestPolicy,
         endpoint_request_policies: Mapping[str, RequestPolicy] | None = None,
         proxy_management_client: "ProxyManagementClient",
+        features_client: FeaturesClient | None = None,
     ) -> None:
         super().__init__(
             default_request_policy=default_request_policy,
@@ -46,6 +48,7 @@ class AppleJobsClient(JobsClient):
             base_url=self.base_url,
             proxy_management_client=proxy_management_client,
         )
+        self.features_client = features_client
 
     def get_jobs(self, *, page: int = 1) -> GetJobsResponse:
         if page < 1:
@@ -68,13 +71,19 @@ class AppleJobsClient(JobsClient):
             )
 
         jobs: list[JobMetadata] = []
+        raw_location_batches: list[list[str]] = []
         for index, item in enumerate(results_raw):
             if not isinstance(item, Mapping):
                 raise ValueError(
                     f"Unexpected Apple payload for search.searchResults[{index}]: "
                     f"expected object, got {type(item).__name__}"
                 )
-            jobs.append(parser.parse_job_metadata(payload=item, base_url=self.base_url, locale=self.locale))
+            raw_location_batches.append(parser.extract_location_strings(item.get("locations")))
+
+        normalized_locations_by_job = self._normalize_locations(raw_location_batches)
+
+        for item, locations in zip(results_raw, normalized_locations_by_job):
+            jobs.append(parser.parse_job_metadata(payload=item, base_url=self.base_url, locale=self.locale, locations=locations))
 
         total_results = parser.to_int(search_data.get("totalRecords"))
         has_next_page = page * self.PAGE_SIZE < total_results if isinstance(total_results, int) else len(jobs) == self.PAGE_SIZE
@@ -90,6 +99,44 @@ class AppleJobsClient(JobsClient):
             page_size=self.PAGE_SIZE,
             page=page,
         )
+
+    def _normalize_locations(self, raw_location_batches: list[list[str]]) -> list[list[Location]]:
+        if not raw_location_batches:
+            return []
+        if self.features_client is None:
+            return [[] for _ in raw_location_batches]
+
+        flattened = [value for batch in raw_location_batches for value in batch]
+        if not flattened:
+            return [[] for _ in raw_location_batches]
+
+        payload = self.features_client.normalize_locations(locations=flattened)
+        raw_locations = payload.get("locations")
+        if not isinstance(raw_locations, list):
+            raise ValueError("Invalid normalize_locations payload")
+
+        normalized_flat: list[Location] = []
+        for item in raw_locations:
+            if not isinstance(item, Mapping):
+                raise ValueError("Invalid normalized location item")
+            normalized_flat.append(
+                Location(
+                    city=str(item.get("city", "") or "").strip(),
+                    state=str(item.get("region", "") or "").strip(),
+                    country=str(item.get("country", "") or "").strip(),
+                )
+            )
+
+        if len(normalized_flat) != len(flattened):
+            raise ValueError("Normalized location count mismatch")
+
+        out: list[list[Location]] = []
+        offset = 0
+        for batch in raw_location_batches:
+            count = len(batch)
+            out.append(normalized_flat[offset : offset + count])
+            offset += count
+        return out
 
     def get_job_details(self, *, job_id: str) -> AppleJobDetailsResponseSchema:
         normalized_job_id = job_id.strip()
