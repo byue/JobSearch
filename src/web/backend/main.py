@@ -18,6 +18,7 @@ from psycopg.rows import dict_row
 from common.job_taxonomy import ALLOWED_JOB_CATEGORIES
 from common.request_policy import RequestPolicy
 from features.client import FeaturesClient
+from scrapers.airflow.clients.common.job_levels import ALLOWED_JOB_LEVELS
 from scrapers.common.elasticsearch import ElasticsearchClient
 from scrapers.common.env import require_env
 from scrapers.common.minio import get_job_description
@@ -176,6 +177,22 @@ def _normalize_job_type(value: str | None) -> str | None:
     return None
 
 
+def _normalize_job_level(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized or normalized == "__all__":
+        return None
+    if normalized in ALLOWED_JOB_LEVELS:
+        return normalized
+    return None
+
+
+def _normalize_search_mode(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "recency":
+        return "recency"
+    return "relevance"
+
+
 def _normalize_location_filter(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     if not normalized or normalized == "__all__":
@@ -283,6 +300,7 @@ def _job_metadata_from_hit(hit: dict[str, Any]) -> JobMetadata:
         runId=str(source.get("run_id") or "") or None,
         name=str(source.get("title") or "") or None,
         company=str(source.get("company") or "") or None,
+        jobLevel=str(source.get("job_level") or "") or None,
         locations=_build_location_from_source(source),
         postedTs=_format_es_posted_ts(source.get("posted_ts")),
         applyUrl=str(source.get("apply_url") or "") or None,
@@ -320,6 +338,7 @@ def _search_filters(
     company: str | None,
     posted_within: str | None,
     job_type: str | None,
+    job_level: str | None,
     *,
     country: str | None = None,
     region: str | None = None,
@@ -330,6 +349,8 @@ def _search_filters(
         filters.append({"term": {"company": company}})
     if job_type:
         filters.append({"term": {"job_type": job_type}})
+    if job_level:
+        filters.append({"term": {"job_level": job_level}})
     if posted_within:
         filters.append({"range": {"posted_ts": {"gte": f"now-{posted_within}"}}})
     location_filter = _location_nested_filter(country, region, city)
@@ -343,6 +364,7 @@ def _browse_jobs(
     *,
     posted_within: str | None,
     job_type: str | None,
+    job_level: str | None,
     country: str | None,
     region: str | None,
     city: str | None,
@@ -363,6 +385,7 @@ def _browse_jobs(
                     company,
                     posted_within,
                     job_type,
+                    job_level,
                     country=country,
                     region=region,
                     city=city,
@@ -413,8 +436,10 @@ def _search_jobs(
     *,
     query: str,
     page: int,
+    search_mode: str,
     posted_within: str | None,
     job_type: str | None,
+    job_level: str | None,
     country: str | None,
     region: str | None,
     city: str | None,
@@ -423,10 +448,41 @@ def _search_jobs(
         company,
         posted_within,
         job_type,
+        job_level,
         country=country,
         region=region,
         city=city,
     )
+
+    if search_mode == "recency":
+        offset = (page - 1) * _PAGE_SIZE
+        recency_body = {
+            "track_total_hits": True,
+            "from": offset,
+            "size": _PAGE_SIZE,
+            "sort": [
+                {"posted_ts": {"order": "desc", "missing": "_last"}},
+                {"external_job_id": {"order": "asc"}},
+            ],
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "multi_match": {
+                                "query": query,
+                                "fields": ["title^4", "skills^3", "job_description"],
+                            }
+                        }
+                    ],
+                    "filter": filters,
+                }
+            },
+        }
+        recency_payload = _es_client().search(index_name=_ES_ALIAS, body=recency_body)
+        hits = _hits_from_response(recency_payload)
+        jobs = [_job_metadata_from_hit(hit) for hit in hits]
+        total_results = _total_hits_from_response(recency_payload)
+        return jobs, total_results, offset + len(jobs) < total_results
 
     query_embedding = _query_embedding(query)
     bm25_body = {
@@ -521,6 +577,7 @@ def _get_location_filters(
     *,
     posted_within: str | None,
     job_type: str | None,
+    job_level: str | None,
     country: str | None,
     region: str | None,
 ) -> tuple[list[str], list[str], list[str]]:
@@ -529,7 +586,7 @@ def _get_location_filters(
         "track_total_hits": False,
         "query": {
             "bool": {
-                "filter": _search_filters(company, posted_within, job_type),
+                "filter": _search_filters(company, posted_within, job_type, job_level),
             }
         },
         "aggs": {
@@ -613,8 +670,10 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
     company = _resolve_company_filter(run_id, payload.company)
     page = max(1, int(payload.pagination_index))
     query = str(payload.query or "").strip()
+    search_mode = _normalize_search_mode(payload.search_mode)
     posted_within = _normalize_posted_within(payload.posted_within)
     job_type = _normalize_job_type(payload.job_type)
+    job_level = _normalize_job_level(payload.job_level)
     country = _normalize_location_filter(payload.country)
     region = _normalize_location_filter(payload.region)
     city = _normalize_location_filter(payload.city)
@@ -625,8 +684,10 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
                 company,
                 query=query,
                 page=page,
+                search_mode=search_mode,
                 posted_within=posted_within,
                 job_type=job_type,
+                job_level=job_level,
                 country=country,
                 region=region,
                 city=city,
@@ -636,6 +697,7 @@ def get_jobs(payload: GetJobsRequest, request: Request) -> GetJobsResponse:
                 company,
                 posted_within=posted_within,
                 job_type=job_type,
+                job_level=job_level,
                 country=country,
                 region=region,
                 city=city,
@@ -680,6 +742,7 @@ def get_location_filters(
     company: str | None = None,
     posted_within: str | None = None,
     job_type: str | None = None,
+    job_level: str | None = None,
     country: str | None = None,
     region: str | None = None,
 ) -> GetLocationFiltersResponse:
@@ -687,6 +750,7 @@ def get_location_filters(
     normalized_company = _resolve_company_filter(run_id, company)
     normalized_posted_within = _normalize_posted_within(posted_within)
     normalized_job_type = _normalize_job_type(job_type)
+    normalized_job_level = _normalize_job_level(job_level)
     normalized_country = _normalize_location_filter(country)
     normalized_region = _normalize_location_filter(region)
     try:
@@ -694,6 +758,7 @@ def get_location_filters(
             normalized_company,
             posted_within=normalized_posted_within,
             job_type=normalized_job_type,
+            job_level=normalized_job_level,
             country=normalized_country,
             region=normalized_region,
         )

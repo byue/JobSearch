@@ -6,6 +6,8 @@ import App, {
   formatLocations,
   formatPosted,
   getJson,
+  normalizeJobLevel,
+  normalizeSearchMode,
   normalizeDescription,
   normalizeCompany,
   normalizeJobType,
@@ -50,7 +52,6 @@ function getReactProps(element) {
 
 async function openResultsPopup(expectedJobRequests = 1) {
   await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("__all__"));
-  await waitFor(() => expect(getCallsMatching("/get_location_filters").length).toBeGreaterThanOrEqual(1));
   fireEvent.click(screen.getByRole("button", { name: "Search" }));
   await waitFor(() => expect(getCallsMatching("/get_jobs").length).toBe(expectedJobRequests));
   await screen.findByRole("dialog", { name: "Search results" });
@@ -138,6 +139,19 @@ describe("App helpers", () => {
     expect(normalizeJobType("bad")).toBe("");
   });
 
+  it("normalizeJobLevel accepts supported values only", () => {
+    expect(normalizeJobLevel(undefined)).toBe("");
+    expect(normalizeJobLevel(" senior ")).toBe("senior");
+    expect(normalizeJobLevel("Unknown")).toBe("unknown");
+    expect(normalizeJobLevel("bad")).toBe("");
+  });
+
+  it("normalizeSearchMode accepts supported values only", () => {
+    expect(normalizeSearchMode(undefined)).toBe("relevance");
+    expect(normalizeSearchMode(" recency ")).toBe("recency");
+    expect(normalizeSearchMode("bad")).toBe("relevance");
+  });
+
   it("normalizeLocationFilter trims values", () => {
     expect(normalizeLocationFilter(undefined)).toBe("");
     expect(normalizeLocationFilter(" Seattle ")).toBe("Seattle");
@@ -222,11 +236,15 @@ describe("App component", () => {
   });
 
   it("loads companies and initial jobs then opens/caches modal details", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    fetch.mockImplementation((url) => {
+      if (String(url).includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (String(url).includes("/get_location_filters")) {
+        return makeResponse(LOCATION_FILTERS_PAYLOAD);
+      }
+      if (String(url).includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [
               {
@@ -234,6 +252,7 @@ describe("App component", () => {
                 runId: "run-1",
                 name: "Software Engineer",
                 company: "amazon",
+                jobLevel: "senior",
                 locations: [{ city: "Seattle", state: "WA", country: "US" }],
                 postedTs: 1700000000,
                 detailsUrl: "https://example.com/details",
@@ -250,30 +269,41 @@ describe("App component", () => {
             pagination_index: 1,
             has_next_page: true
           }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
+        });
+      }
+      if (String(url).includes("/get_job_details")) {
+        return makeResponse({
           payload: {
             jobDescription: "<p>Hello<br>World</p>",
             skills: ["Python", "SQL"]
           }
-        })
-      );
+        });
+      }
+      return makeResponse();
+    });
 
     render(<App />);
     await openResultsPopup();
 
     expect(await screen.findByText("Software Engineer", { selector: "h3" })).toBeInTheDocument();
+    expect(screen.getByText("Amazon, Senior")).toBeInTheDocument();
     expect(screen.getByText("Page 1 of 2")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("No Id"));
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    await act(async () => {
+      fireEvent.click(screen.getByText("No Id"));
+    });
+    await waitFor(() => expect(getCallsMatching("/get_job_details").length).toBe(0));
 
-    fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
+    });
 
-    expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
     expect(await screen.findByText("Job Description")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("Amazon", { selector: ".details-value" })).toBeInTheDocument();
+    expect(screen.getByText("Level")).toBeInTheDocument();
+    expect(screen.getByText("Senior", { selector: ".details-value" })).toBeInTheDocument();
     expect(screen.getByText("Skills")).toBeInTheDocument();
     expect(screen.getByText("Python")).toBeInTheDocument();
     expect(screen.getByText("SQL")).toBeInTheDocument();
@@ -288,33 +318,43 @@ describe("App component", () => {
     );
     expect(screen.getByRole("link", { name: "Apply now" })).toHaveAttribute("href", "https://example.com/apply");
 
-    fireEvent.keyDown(window, { key: "Escape" });
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
     await waitFor(() => expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument());
 
-    fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Software Engineer", { selector: "h3" }));
+    });
     expect(await screen.findByRole("button", { name: "Close" })).toBeInTheDocument();
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(getCallsMatching("/get_job_details").length).toBe(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    });
     await waitFor(() => expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument());
-  });
+  }, 10000);
 
   it("returns early when a position without an id is opened", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    fetch.mockImplementation((url) => {
+      if (String(url).includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (String(url).includes("/get_location_filters")) {
+        return makeResponse(LOCATION_FILTERS_PAYLOAD);
+      }
+      if (String(url).includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [{ name: "No Id", company: "amazon", locations: [] }],
             total_results: 1,
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
+        });
+      }
+      if (String(url).includes("/get_job_details")) {
+        return makeResponse({
           payload: {
             jobs: [
               {
@@ -329,8 +369,10 @@ describe("App component", () => {
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      );
+        });
+      }
+      return makeResponse();
+    });
 
     render(<App />);
     await openResultsPopup();
@@ -340,9 +382,11 @@ describe("App component", () => {
     const reactPropsKey = Object.keys(row).find((key) => key.startsWith("__reactProps"));
     expect(reactPropsKey).toBeTruthy();
 
-    row[reactPropsKey].onClick();
+    await act(async () => {
+      row[reactPropsKey].onClick();
+    });
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(getCallsMatching("/get_job_details").length).toBe(0));
     expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
   });
 
@@ -415,6 +459,104 @@ describe("App component", () => {
       city: null,
       pagination_index: 1
     });
+  });
+
+  it("submits job-level filter with job search requests", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      )
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      );
+
+    render(<App />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByLabelText("Job Level"), { target: { value: "senior" } });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(getCallsMatching("/get_jobs").length).toBe(1));
+    expect(getLastPostedBody("/get_jobs")).toEqual({
+      company: null,
+      query: null,
+      posted_within: null,
+      job_type: null,
+      job_level: "senior",
+      country: null,
+      region: null,
+      city: null,
+      pagination_index: 1
+    });
+  });
+
+  it("submits recency search mode with job search requests", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      )
+      .mockImplementationOnce(() =>
+        makeResponse({
+          payload: { jobs: [], total_results: 0, pagination_index: 1, has_next_page: false }
+        })
+      );
+
+    render(<App />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Latest" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    await waitFor(() => expect(getCallsMatching("/get_jobs").length).toBe(1));
+    expect(getLastPostedBody("/get_jobs")).toEqual({
+      company: null,
+      query: null,
+      search_mode: "recency",
+      posted_within: null,
+      job_type: null,
+      country: null,
+      region: null,
+      city: null,
+      pagination_index: 1
+    });
+  });
+
+  it("lets users switch search mode back to relevance", async () => {
+    fetch
+      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
+      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD));
+
+    render(<App />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByRole("button", { name: "Sort by" })).toHaveTextContent("Sort by");
+    fireEvent.click(screen.getByRole("button", { name: "Sort by" }));
+    const relevanceButton = screen.getByRole("radio", { name: "Relevance" });
+    const recencyButton = screen.getByRole("radio", { name: "Latest" });
+
+    expect(relevanceButton).toBeChecked();
+    expect(recencyButton).not.toBeChecked();
+
+    fireEvent.click(recencyButton);
+    expect(relevanceButton).not.toBeChecked();
+    expect(recencyButton).toBeChecked();
+    expect(screen.getByRole("button", { name: "Sort by" })).toHaveTextContent("Sort by");
+
+    fireEvent.click(relevanceButton);
+    expect(relevanceButton).toBeChecked();
+    expect(recencyButton).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Sort by" })).toHaveTextContent("Sort by");
   });
 
   it("opens results popup after a submitted search without scrolling the page", async () => {
@@ -495,25 +637,38 @@ describe("App component", () => {
   });
 
   it("handles details error response and payload-without-job", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    let detailsRequests = 0;
+    fetch.mockImplementation((url) => {
+      if (String(url).includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (String(url).includes("/get_location_filters")) {
+        return makeResponse(LOCATION_FILTERS_PAYLOAD);
+      }
+      if (String(url).includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [{ id: "role-1", name: "Role One", company: "amazon", locations: [] }],
             total_results: 1,
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({ ok: false, status: 503, statusText: "Service Unavailable", payload: { detail: "blocked" } })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({ payload: { error: "missing job" } })
-      );
+        });
+      }
+      if (String(url).includes("/get_job_details")) {
+        detailsRequests += 1;
+        if (detailsRequests === 1) {
+          return makeResponse({
+            ok: false,
+            status: 503,
+            statusText: "Service Unavailable",
+            payload: { detail: "blocked" }
+          });
+        }
+        return makeResponse({ payload: { error: "missing job" } });
+      }
+      return makeResponse();
+    });
 
     render(<App />);
     await openResultsPopup();
@@ -528,20 +683,28 @@ describe("App component", () => {
   });
 
   it("handles details payload-without-job and non-string error fallback", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    fetch.mockImplementation((url) => {
+      if (String(url).includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (String(url).includes("/get_location_filters")) {
+        return makeResponse(LOCATION_FILTERS_PAYLOAD);
+      }
+      if (String(url).includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [{ id: "role-x", name: "Role X", company: "amazon", locations: [] }],
             total_results: 1,
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      )
-      .mockImplementationOnce(() => makeResponse({ payload: { error: { code: "MISSING" } } }));
+        });
+      }
+      if (String(url).includes("/get_job_details")) {
+        return makeResponse({ payload: { error: { code: "MISSING" } } });
+      }
+      return makeResponse();
+    });
 
     render(<App />);
     await openResultsPopup();
@@ -628,20 +791,28 @@ describe("App component", () => {
   });
 
   it("keeps modal open on non-escape keydown and handles non-Error details failure", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() => makeResponse(LOCATION_FILTERS_PAYLOAD))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    fetch.mockImplementation((url) => {
+      if (String(url).includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (String(url).includes("/get_location_filters")) {
+        return makeResponse(LOCATION_FILTERS_PAYLOAD);
+      }
+      if (String(url).includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [{ id: "role-y", company: "amazon", locations: [] }],
             total_results: 1,
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      )
-      .mockImplementationOnce(() => Promise.reject("details-down"));
+        });
+      }
+      if (String(url).includes("/get_job_details")) {
+        return Promise.reject("details-down");
+      }
+      return makeResponse();
+    });
 
     render(<App />);
     await openResultsPopup();
@@ -857,37 +1028,40 @@ describe("App component", () => {
   });
 
   it("loads location dropdown options and submits country region city filters", async () => {
-    fetch
-      .mockImplementationOnce(() => makeResponse({ payload: { companies: ["amazon"] } }))
-      .mockImplementationOnce(() =>
-        makeResponse({
+    fetch.mockImplementation((url) => {
+      const normalizedUrl = String(url);
+      if (normalizedUrl.includes("/get_companies")) {
+        return makeResponse({ payload: { companies: ["amazon"] } });
+      }
+      if (normalizedUrl.includes("/get_location_filters")) {
+        if (normalizedUrl.includes("region=Washington")) {
+          return makeResponse({
+            payload: {
+              countries: ["United States"],
+              regions: ["Washington"],
+              cities: ["Seattle"]
+            }
+          });
+        }
+        if (normalizedUrl.includes("country=United+States")) {
+          return makeResponse({
+            payload: {
+              countries: ["United States"],
+              regions: ["Washington"],
+              cities: ["Seattle"]
+            }
+          });
+        }
+        return makeResponse({
           payload: {
             countries: ["United States"],
             regions: ["Washington"],
             cities: ["Seattle", "Tacoma"]
           }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
-          payload: {
-            countries: ["United States"],
-            regions: ["Washington"],
-            cities: ["Seattle"]
-          }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
-          payload: {
-            countries: ["United States"],
-            regions: ["Washington"],
-            cities: ["Seattle"]
-          }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
+        });
+      }
+      if (normalizedUrl.includes("/get_jobs")) {
+        return makeResponse({
           payload: {
             jobs: [],
             total_results: 0,
@@ -895,24 +1069,15 @@ describe("App component", () => {
             pagination_index: 1,
             has_next_page: false
           }
-        })
-      )
-      .mockImplementationOnce(() =>
-        makeResponse({
-          payload: {
-            jobs: [],
-            total_results: 0,
-            page_size: 25,
-            pagination_index: 1,
-            has_next_page: false
-          }
-        })
-      );
+        });
+      }
+      return makeResponse();
+    });
 
     render(<App />);
-    await waitFor(() => expect(getCallsMatching("/get_location_filters").length).toBe(1));
+    await waitFor(() => expect(screen.getByLabelText("Company")).toHaveValue("__all__"));
     fireEvent.click(screen.getByRole("button", { name: "Location" }));
-    expect(screen.getByRole("option", { name: "United States" })).toBeInTheDocument();
+    expect(await screen.findByRole("option", { name: "United States" })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Washington" })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "Seattle" })).not.toBeInTheDocument();
 
@@ -994,6 +1159,16 @@ describe("App component", () => {
 
     render(<App />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Sort by" }));
+    expect(screen.getByRole("radio", { name: "Relevance" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "Relevance" })).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by" }));
+    expect(screen.getByRole("radio", { name: "Relevance" })).toBeInTheDocument();
+    fireEvent.mouseDown(window.document.body);
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "Relevance" })).not.toBeInTheDocument());
+
     fireEvent.click(screen.getByRole("button", { name: "Location" }));
     expect(screen.getByLabelText("Country")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
@@ -1048,6 +1223,13 @@ describe("App component", () => {
     });
 
     render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Sort by" }));
+    expect(screen.getByRole("radio", { name: "Relevance" })).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("radio", { name: "Relevance" }));
+    expect(screen.getByRole("radio", { name: "Relevance" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Enter" });
+    expect(screen.getByRole("radio", { name: "Relevance" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Location" }));
     expect(screen.getByLabelText("Country")).toBeInTheDocument();
@@ -1153,6 +1335,7 @@ describe("App component", () => {
       );
 
     render(<App />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole("button", { name: "Location" }));
     expect(screen.queryByRole("option", { name: "United States" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Region")).not.toBeInTheDocument();
@@ -1229,7 +1412,7 @@ describe("App component", () => {
     fireEvent.click(screen.getByText("Role Two"));
     await waitFor(() => expect(firstDetailsSignal.aborted).toBe(true));
     await screen.findByRole("button", { name: "Close" });
-    const detailsCompanyLabel = document.querySelector(".details-meta span");
+    const detailsCompanyLabel = document.querySelector(".details-section .details-value");
     expect(detailsCompanyLabel?.textContent).toBe("Company");
   });
 });

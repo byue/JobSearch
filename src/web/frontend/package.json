@@ -14,7 +14,8 @@
   "dependencies": {
     "country-state-city": "^3.2.1",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "lucide-react": "^0.577.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

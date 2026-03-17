@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   external_job_id      TEXT NOT NULL,
   title                TEXT,
   job_type             TEXT,
+  job_level            TEXT,
   details_url          TEXT,
   apply_url            TEXT,
   locations            JSONB NOT NULL DEFAULT '[]'::jsonb,

@@ -1,12 +1,6 @@
 """Company-specific job clients."""
 
-from .amazon import AmazonJobsClient
-from .apple import AppleJobsClient
-from .common.base import JobsClient
-from .google import GoogleJobsClient
-from .meta import MetaJobsClient
-from .microsoft import MicrosoftJobsClient
-from .netflix import NetflixJobsClient
+from __future__ import annotations
 
 __all__ = [
     "JobsClient",
@@ -17,3 +11,31 @@ __all__ = [
     "NetflixJobsClient",
     "MetaJobsClient",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "AmazonJobsClient":
+        from .amazon import AmazonJobsClient
+
+        return AmazonJobsClient
+    if name == "AppleJobsClient":
+        from .apple import AppleJobsClient
+
+        return AppleJobsClient
+    if name == "GoogleJobsClient":
+        from .google import GoogleJobsClient
+
+        return GoogleJobsClient
+    if name == "MetaJobsClient":
+        from .meta import MetaJobsClient
+
+        return MetaJobsClient
+    if name == "MicrosoftJobsClient":
+        from .microsoft import MicrosoftJobsClient
+
+        return MicrosoftJobsClient
+    if name == "NetflixJobsClient":
+        from .netflix import NetflixJobsClient
+
+        return NetflixJobsClient
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

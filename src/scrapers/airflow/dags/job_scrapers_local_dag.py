@@ -35,6 +35,7 @@ from scrapers.airflow.dags.job_scrapers_db import (
 )
 from common.job_taxonomy import ALLOWED_JOB_CATEGORIES
 from scrapers.airflow.clients.client_factory import build_client
+from scrapers.airflow.clients.common.job_levels import ALLOWED_JOB_LEVELS, get_normalized_job_level
 from common.request_policy import RequestPolicy
 from features.client import FeaturesClient
 from scrapers.common.company_scopes import resolve_companies as resolve_companies_from_env
@@ -177,6 +178,7 @@ def job_scrapers_local_dag() -> None:
                 "company": {"type": "keyword"},
                 "external_job_id": {"type": "keyword"},
                 "job_type": {"type": "keyword"},
+                "job_level": {"type": "keyword"},
                 "title": {
                     "type": "text",
                     "fields": {
@@ -380,11 +382,15 @@ def job_scrapers_local_dag() -> None:
                 )
             ]
             posted_ts = getattr(job, "postedTs", None)
+            job_level = str(getattr(job, "jobLevel", "") or "").strip().lower() or None
+            if job_level not in ALLOWED_JOB_LEVELS:
+                job_level = get_normalized_job_level(str(getattr(job, "name", "") or ""), company)
             jobs_payload.append(
                 {
                     "job_id": job_id,
                     "title": str(getattr(job, "name", "") or "").strip() or None,
                     "job_type": job_type,
+                    "job_level": job_level,
                     "details_url": str(getattr(job, "detailsUrl", "") or "").strip() or None,
                     "apply_url": str(getattr(job, "applyUrl", "") or "").strip() or None,
                     "locations": locations,
@@ -403,6 +409,7 @@ def job_scrapers_local_dag() -> None:
                     "external_job_id": str(job.get("job_id", "")).strip(),
                     "title": job.get("title"),
                     "job_type": job.get("job_type"),
+                    "job_level": job.get("job_level"),
                     "details_url": job.get("details_url"),
                     "apply_url": job.get("apply_url"),
                     "locations": job.get("locations") or [],
@@ -782,6 +789,7 @@ def job_scrapers_local_dag() -> None:
                             "company": str(row["company"]),
                             "external_job_id": str(row["external_job_id"]),
                             "job_type": row.get("job_type"),
+                            "job_level": row.get("job_level"),
                             "title": row.get("title"),
                             "details_url": row.get("details_url"),
                             "apply_url": row.get("apply_url"),

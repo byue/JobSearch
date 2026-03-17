@@ -172,6 +172,12 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._normalize_job_type(" software_engineer "), "software_engineer")
         self.assertIsNone(m._normalize_job_type("__all__"))
         self.assertIsNone(m._normalize_job_type("bad"))
+        self.assertEqual(m._normalize_job_level(" senior "), "senior")
+        self.assertIsNone(m._normalize_job_level("__all__"))
+        self.assertIsNone(m._normalize_job_level("bad"))
+        self.assertEqual(m._normalize_search_mode("recency"), "recency")
+        self.assertEqual(m._normalize_search_mode(" relevance "), "relevance")
+        self.assertEqual(m._normalize_search_mode("bad"), "relevance")
         self.assertIsNone(m._normalize_location_filter(None))
         self.assertIsNone(m._normalize_location_filter("__all__"))
         self.assertEqual(m._normalize_location_filter(" Seattle "), "Seattle")
@@ -211,18 +217,21 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(m._total_hits_from_response({"hits": {"total": {"value": 3}}}), 3)
         self.assertEqual(m._total_hits_from_response({"hits": {"total": 4}}), 4)
 
-        self.assertEqual(m._search_filters(None, None, None), [])
-        self.assertEqual(m._search_filters("amazon", None, None), [{"term": {"company": "amazon"}}])
+        self.assertEqual(m._search_filters(None, None, None, None), [])
+        self.assertEqual(m._search_filters("amazon", None, None, None), [{"term": {"company": "amazon"}}])
         self.assertEqual(
-            m._search_filters("amazon", "7d", "software_engineer"),
+            m._search_filters("amazon", "7d", "software_engineer", "senior"),
             [
                 {"term": {"company": "amazon"}},
                 {"term": {"job_type": "software_engineer"}},
+                {"term": {"job_level": "senior"}},
                 {"range": {"posted_ts": {"gte": "now-7d"}}},
             ],
         )
         self.assertEqual(
-            m._search_filters("amazon", None, None, country="United States", region="Washington", city="Seattle"),
+            m._search_filters(
+                "amazon", None, None, None, country="United States", region="Washington", city="Seattle"
+            ),
             [
                 {"term": {"company": "amazon"}},
                 {
@@ -254,6 +263,7 @@ class BackendMainTest(unittest.TestCase):
                 "run_id": "run-1",
                 "title": "Role",
                 "company": "amazon",
+                "job_level": "senior",
                 "locations": [{"city": "Seattle", "region": "Washington", "country": "United States"}],
                 "posted_ts": "2026-01-01T00:00:00Z",
                 "apply_url": "https://apply",
@@ -264,6 +274,7 @@ class BackendMainTest(unittest.TestCase):
         self.assertEqual(job.id, "job-1")
         self.assertEqual(job.runId, "run-1")
         self.assertEqual(job.company, "amazon")
+        self.assertEqual(job.jobLevel, "senior")
         self.assertEqual(job.locations[0].country, "United States")
 
         es_client = Mock()
@@ -273,6 +284,7 @@ class BackendMainTest(unittest.TestCase):
                 "amazon",
                 posted_within="7d",
                 job_type="software_engineer",
+                job_level="senior",
                 country="United States",
                 region="Washington",
                 city="Seattle",
@@ -288,6 +300,7 @@ class BackendMainTest(unittest.TestCase):
             [
                 {"term": {"company": "amazon"}},
                 {"term": {"job_type": "software_engineer"}},
+                {"term": {"job_level": "senior"}},
                 {"range": {"posted_ts": {"gte": "now-7d"}}},
                 {
                     "nested": {
@@ -348,8 +361,10 @@ class BackendMainTest(unittest.TestCase):
                 "amazon",
                 query="python",
                 page=1,
+                search_mode="relevance",
                 posted_within=None,
                 job_type="data_scientist",
+                job_level="senior",
                 country="United States",
                 region="Washington",
                 city="Seattle",
@@ -365,6 +380,7 @@ class BackendMainTest(unittest.TestCase):
             [
                 {"term": {"company": "amazon"}},
                 {"term": {"job_type": "data_scientist"}},
+                {"term": {"job_level": "senior"}},
                 {
                     "nested": {
                         "path": "locations",
@@ -386,6 +402,38 @@ class BackendMainTest(unittest.TestCase):
 
         es_client = Mock()
         es_client.search.return_value = {
+            "hits": {
+                "hits": [
+                    {"_id": "newer", "_source": {"external_job_id": "newer", "company": "amazon", "run_id": "r1", "title": "Role Newer", "posted_ts": "2026-01-01T00:00:00Z"}},
+                    {"_id": "older", "_source": {"external_job_id": "older", "company": "amazon", "run_id": "r1", "title": "Role Older", "posted_ts": "2025-01-01T00:00:00Z"}},
+                ],
+                "total": {"value": 2},
+            }
+        }
+        with patch.object(m, "_query_embedding", return_value=[0.1, -0.2]), patch.object(m, "_es_client", return_value=es_client):
+            jobs, total, has_next = m._search_jobs(
+                "amazon",
+                query="python",
+                page=1,
+                search_mode="recency",
+                posted_within=None,
+                job_type=None,
+                job_level=None,
+                country=None,
+                region=None,
+                city=None,
+            )
+        self.assertEqual([job.id for job in jobs], ["newer", "older"])
+        self.assertEqual(total, 2)
+        self.assertFalse(has_next)
+        recency_body = es_client.search.call_args.kwargs["body"]
+        self.assertEqual(recency_body["sort"][0]["posted_ts"]["order"], "desc")
+        self.assertEqual(recency_body["sort"][1]["external_job_id"]["order"], "asc")
+        self.assertEqual(recency_body["query"]["bool"]["must"][0]["multi_match"]["query"], "python")
+        self.assertNotIn("knn", recency_body)
+
+        es_client = Mock()
+        es_client.search.return_value = {
             "aggregations": {
                 "locations": {
                     "countries": {"values": {"buckets": [{"key": "United States"}]}},
@@ -399,6 +447,7 @@ class BackendMainTest(unittest.TestCase):
                 "amazon",
                 posted_within="7d",
                 job_type="software_engineer",
+                job_level="senior",
                 country="United States",
                 region="Washington",
             )
@@ -465,7 +514,12 @@ class BackendMainTest(unittest.TestCase):
     def test_get_jobs(self) -> None:
         m = self.module
         request = _make_request()
-        payload = m.GetJobsRequest(company="amazon", job_type="software_engineer", pagination_index=1)
+        payload = m.GetJobsRequest(
+            company="amazon",
+            job_type="software_engineer",
+            job_level="senior",
+            pagination_index=1,
+        )
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_validate_company_in_run", return_value="amazon"
@@ -479,6 +533,7 @@ class BackendMainTest(unittest.TestCase):
                         runId="run-1",
                         name="Role",
                         company="amazon",
+                        jobLevel="senior",
                         locations=[m.Location(city="Seattle", state="WA", country="US")],
                         postedTs=1735689600,
                         detailsUrl="https://www.amazon.jobs/en/jobs/job-1",
@@ -511,7 +566,9 @@ class BackendMainTest(unittest.TestCase):
             payload = m.GetJobsRequest(
                 company="amazon",
                 query="python",
+                search_mode="recency",
                 job_type="manager",
+                job_level="senior",
                 country="United States",
                 region="Washington",
                 city="Seattle",
@@ -522,8 +579,10 @@ class BackendMainTest(unittest.TestCase):
             "amazon",
             query="python",
             page=1,
+            search_mode="recency",
             posted_within=None,
             job_type="manager",
+            job_level="senior",
             country="United States",
             region="Washington",
             city="Seattle",
@@ -534,7 +593,14 @@ class BackendMainTest(unittest.TestCase):
     def test_get_jobs_search_and_all_companies(self) -> None:
         m = self.module
         request = _make_request()
-        payload = m.GetJobsRequest(company=None, query="python", job_type="data_scientist", pagination_index=1)
+        payload = m.GetJobsRequest(
+            company=None,
+            query="python",
+            search_mode="recency",
+            job_type="data_scientist",
+            job_level="mid",
+            pagination_index=1,
+        )
 
         with patch.object(m, "_active_run_id", return_value="run-1"), patch.object(
             m, "_search_jobs", return_value=([], 0, False)
@@ -560,6 +626,7 @@ class BackendMainTest(unittest.TestCase):
                 company="amazon",
                 posted_within="7d",
                 job_type="software_engineer",
+                job_level="senior",
                 country="United States",
                 region="Washington",
             )
@@ -570,6 +637,7 @@ class BackendMainTest(unittest.TestCase):
             "amazon",
             posted_within="7d",
             job_type="software_engineer",
+            job_level="senior",
             country="United States",
             region="Washington",
         )
