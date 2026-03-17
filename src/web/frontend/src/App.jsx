@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpDown, Search } from "lucide-react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -59,6 +60,27 @@ export function normalizeJobType(value) {
     normalized === "manager"
     ? normalized
     : "";
+}
+
+export function normalizeJobLevel(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "intern" ||
+    normalized === "junior" ||
+    normalized === "mid" ||
+    normalized === "senior" ||
+    normalized === "staff" ||
+    normalized === "principal" ||
+    normalized === "distinguished" ||
+    normalized === "fellow" ||
+    normalized === "director" ||
+    normalized === "unknown"
+    ? normalized
+    : "";
+}
+
+export function normalizeSearchMode(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "recency" ? "recency" : "relevance";
 }
 
 export function normalizeLocationFilter(value) {
@@ -166,6 +188,7 @@ export async function getJson(url) {
 export default function App() {
   const resultsSectionRef = useRef(null);
   const locationFilterRef = useRef(null);
+  const sortFilterRef = useRef(null);
   const [companyOptions, setCompanyOptions] = useState([]);
   const [selectedCompany, setSelectedCompany] = useState("");
   const [appliedCompany, setAppliedCompany] = useState("");
@@ -173,8 +196,12 @@ export default function App() {
   const [appliedQuery, setAppliedQuery] = useState("");
   const [postedWithin, setPostedWithin] = useState("");
   const [appliedPostedWithin, setAppliedPostedWithin] = useState("");
+  const [searchMode, setSearchMode] = useState("relevance");
+  const [appliedSearchMode, setAppliedSearchMode] = useState("relevance");
   const [jobType, setJobType] = useState("");
   const [appliedJobType, setAppliedJobType] = useState("");
+  const [jobLevel, setJobLevel] = useState("");
+  const [appliedJobLevel, setAppliedJobLevel] = useState("");
   const [country, setCountry] = useState("");
   const [region, setRegion] = useState("");
   const [city, setCity] = useState("");
@@ -183,6 +210,7 @@ export default function App() {
   const [appliedCity, setAppliedCity] = useState("");
   const [locationOptions, setLocationOptions] = useState({ countries: [], regions: [], cities: [] });
   const [isLocationFilterOpen, setIsLocationFilterOpen] = useState(false);
+  const [isSortFilterOpen, setIsSortFilterOpen] = useState(false);
   const [companiesLoading, setCompaniesLoading] = useState(false);
 
   const [positions, setPositions] = useState([]);
@@ -264,16 +292,21 @@ export default function App() {
 
   async function loadLocationFilters(
     companyValue = selectedCompany,
+    selectedJobLevel = jobLevel,
     selectedCountry = country,
     selectedRegion = region
   ) {
     const params = new URLSearchParams();
     const normalizedCompany = normalizeCompany(companyValue);
+    const normalizedJobLevel = normalizeJobLevel(selectedJobLevel);
     const normalizedCountry = normalizeLocationFilter(selectedCountry);
     const normalizedRegion = normalizeLocationFilter(selectedRegion);
     const normalizedCity = normalizeLocationFilter(city);
     if (normalizedCompany && normalizedCompany !== "__all__") {
       params.set("company", normalizedCompany);
+    }
+    if (normalizedJobLevel) {
+      params.set("job_level", normalizedJobLevel);
     }
     if (normalizedCountry) {
       params.set("country", normalizedCountry);
@@ -315,8 +348,10 @@ export default function App() {
     targetPage,
     company = appliedCompany,
     query = appliedQuery,
+    targetSearchMode = appliedSearchMode,
     timeWindow = appliedPostedWithin,
     targetJobType = appliedJobType,
+    targetJobLevel = appliedJobLevel,
     targetCountry = appliedCountry,
     targetRegion = appliedRegion,
     targetCity = appliedCity,
@@ -325,8 +360,10 @@ export default function App() {
     const { openResultsOnSuccess = false } = options;
     const normalizedCompany = normalizeCompany(company);
     const normalizedQuery = String(query).trim();
+    const normalizedSearchMode = normalizeSearchMode(targetSearchMode);
     const normalizedPostedWithin = normalizePostedWithin(timeWindow);
     const normalizedJobType = normalizeJobType(targetJobType);
+    const normalizedJobLevel = normalizeJobLevel(targetJobLevel);
     const normalizedCountry = normalizeLocationFilter(targetCountry);
     const normalizedRegion = normalizeLocationFilter(targetRegion);
     const normalizedCity = normalizeLocationFilter(targetCity);
@@ -341,6 +378,12 @@ export default function App() {
       city: normalizedCity || null,
       pagination_index: targetPage
     };
+    if (normalizedJobLevel) {
+      normalizedSearchBody.job_level = normalizedJobLevel;
+    }
+    if (normalizedSearchMode === "recency") {
+      normalizedSearchBody.search_mode = normalizedSearchMode;
+    }
 
     setIsLoading(true);
     setErrorMessage("");
@@ -460,9 +503,9 @@ export default function App() {
     if (companyOptions.length === 0) {
       return;
     }
-    void loadLocationFilters(selectedCompany, country, region);
+    void loadLocationFilters(selectedCompany, jobLevel, country, region);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companyOptions.length, selectedCompany, country, region]);
+  }, [companyOptions.length, selectedCompany, jobLevel, country, region]);
 
   const activeCompanyLabel = companyLabelByValue[appliedCompany] || toTitleCase(appliedCompany);
   const totalPages =
@@ -475,6 +518,7 @@ export default function App() {
   const detailsPostedTs =
     typeof activePosition?.postedTs === "number" ? activePosition.postedTs : null;
   const detailsLocations = Array.isArray(activePosition?.locations) ? activePosition.locations : [];
+  const detailsJobLevel = normalizeJobLevel(activePosition?.jobLevel);
   const detailsCompanyLabel =
     companyLabelByValue[activePosition?.company] ||
     toTitleCase(activePosition?.company) ||
@@ -496,17 +540,21 @@ export default function App() {
   }, [isModalOpen]);
 
   useEffect(() => {
-    if (!isLocationFilterOpen) {
+    if (!isLocationFilterOpen && !isSortFilterOpen) {
       return undefined;
     }
     const onPointerDown = (event) => {
       if (locationFilterRef.current && !locationFilterRef.current.contains(event.target)) {
         setIsLocationFilterOpen(false);
       }
+      if (sortFilterRef.current && !sortFilterRef.current.contains(event.target)) {
+        setIsSortFilterOpen(false);
+      }
     };
     const onKeyDown = (event) => {
       if (event.key === "Escape") {
         setIsLocationFilterOpen(false);
+        setIsSortFilterOpen(false);
       }
     };
     window.addEventListener("mousedown", onPointerDown);
@@ -515,21 +563,23 @@ export default function App() {
       window.removeEventListener("mousedown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [isLocationFilterOpen]);
+  }, [isLocationFilterOpen, isSortFilterOpen]);
 
   function submitSearch(event) {
     event.preventDefault();
     const nextQuery = String(searchQuery).trim();
     setAppliedCompany(selectedCompany);
     setAppliedQuery(nextQuery);
+    setAppliedSearchMode(searchMode);
     setAppliedPostedWithin(postedWithin);
     setAppliedJobType(jobType);
+    setAppliedJobLevel(jobLevel);
     setAppliedCountry(country);
     setAppliedRegion(region);
     setAppliedCity(city);
     setIsLocationFilterOpen(false);
     setIsResultsOpen(false);
-    void searchJobs(1, selectedCompany, nextQuery, postedWithin, jobType, country, region, city, {
+    void searchJobs(1, selectedCompany, nextQuery, searchMode, postedWithin, jobType, jobLevel, country, region, city, {
       openResultsOnSuccess: true
     });
   }
@@ -548,7 +598,7 @@ export default function App() {
           <p className="hero-intro">Access the most selective tech roles at the world’s top companies.</p>
 
           <form className="search-panel search-panel-centered" onSubmit={submitSearch}>
-            <div className="search-shell search-shell-wide">
+            <div className="search-shell">
               <label className="search-input-wrap" aria-label="Search">
                 <input
                   type="search"
@@ -559,10 +609,12 @@ export default function App() {
                 />
               </label>
               <button className="btn btn-primary search-submit-btn" type="submit" disabled={isLoading}>
-                {isLoading ? "Searching..." : "Search"}
+                  <Search size={16} />
+                  <span>Search</span>
               </button>
             </div>
-            <div className="subfilters">
+            <div className="filter-section">
+              <div className="subfilters">
               <label className="field company-select-field">
                 <select
                   aria-label="Company"
@@ -613,6 +665,24 @@ export default function App() {
                   <option value="manager">Manager</option>
                 </select>
               </label>
+              <label className="field company-select-field">
+                <select
+                  aria-label="Job Level"
+                  value={jobLevel}
+                  onChange={(event) => setJobLevel(event.target.value)}
+                >
+                  <option value="">All job levels</option>
+                  <option value="intern">Intern</option>
+                  <option value="junior">Junior</option>
+                  <option value="mid">Mid</option>
+                  <option value="senior">Senior</option>
+                  <option value="staff">Staff</option>
+                  <option value="principal">Principal</option>
+                  <option value="distinguished">Distinguished</option>
+                  <option value="fellow">Fellow</option>
+                  <option value="director">Director</option>
+                </select>
+              </label>
               <div className="field company-select-field location-filter-field" ref={locationFilterRef}>
                 <button
                   type="button"
@@ -620,7 +690,10 @@ export default function App() {
                   aria-label="Location"
                   aria-expanded={isLocationFilterOpen}
                   aria-controls="location-filter-panel"
-                  onClick={() => setIsLocationFilterOpen((previous) => !previous)}
+                  onClick={() => {
+                    setIsSortFilterOpen(false);
+                    setIsLocationFilterOpen((previous) => !previous);
+                  }}
                 >
                   <span>{formatLocationFilterSummary(country, region, city)}</span>
                 </button>
@@ -695,6 +768,50 @@ export default function App() {
                   </div>
                 ) : null}
               </div>
+              </div>
+              <div className="field sort-filter-field" ref={sortFilterRef}>
+                <button
+                  type="button"
+                  className="sort-filter-trigger"
+                  aria-label="Sort by"
+                  aria-expanded={isSortFilterOpen}
+                  aria-controls="sort-filter-panel"
+                  onClick={() => {
+                    setIsLocationFilterOpen(false);
+                    setIsSortFilterOpen((previous) => !previous);
+                  }}
+                  disabled={isLoading}
+                >
+                  <ArrowUpDown size={16} />
+                  <span>Sort by</span>
+                </button>
+                {isSortFilterOpen ? (
+                  <div className="sort-filter-panel" id="sort-filter-panel">
+                    <div className="search-mode-radios" role="radiogroup" aria-label="Sort by">
+                      <label className="search-mode-radio">
+                        <input
+                          type="radio"
+                          name="search-mode"
+                          value="relevance"
+                          checked={searchMode === "relevance"}
+                          onChange={() => setSearchMode("relevance")}
+                        />
+                        <span>Relevance</span>
+                      </label>
+                      <label className="search-mode-radio">
+                        <input
+                          type="radio"
+                          name="search-mode"
+                          value="recency"
+                          checked={searchMode === "recency"}
+                          onChange={() => setSearchMode("recency")}
+                        />
+                        <span>Latest</span>
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </form>
           {errorMessage && !isResultsOpen && <div className="alert-error hero-alert">{errorMessage}</div>}
@@ -731,30 +848,36 @@ export default function App() {
 
             <div className="results-list" role="list">
               {!isLoading &&
-                positions.map((position, index) => (
-                  <button
-                    key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
-                    type="button"
-                    role="listitem"
-                    style={{ "--row-index": index }}
-                    onClick={() => openDetails(position)}
-                    className={`result-item ${position.id ? "row-clickable" : "row-disabled"}`}
-                    disabled={!position.id}
-                  >
-                    <div className="result-item-main">
-                      <div className="result-item-topline">
-                        <span className="result-company">
-                          {companyLabelByValue[position.company] || toTitleCase(position.company) || "—"}
-                        </span>
-                        <span className="result-posted">{formatPosted(position.postedTs)}</span>
+                positions.map((position, index) => {
+                  const resultJobLevel = normalizeJobLevel(position.jobLevel);
+                  const resultCompanyLabel =
+                    companyLabelByValue[position.company] || toTitleCase(position.company) || "—";
+                  const resultCompanyMeta = resultJobLevel
+                    ? `${resultCompanyLabel}, ${toTitleCase(resultJobLevel)}`
+                    : resultCompanyLabel;
+                  return (
+                    <button
+                      key={`${position.company ?? "company"}-${position.id ?? position.detailsUrl ?? position.applyUrl ?? index}`}
+                      type="button"
+                      role="listitem"
+                      style={{ "--row-index": index }}
+                      onClick={() => openDetails(position)}
+                      className={`result-item ${position.id ? "row-clickable" : "row-disabled"}`}
+                      disabled={!position.id}
+                    >
+                      <div className="result-item-main">
+                        <div className="result-item-topline">
+                          <span className="result-company">{resultCompanyMeta}</span>
+                          <span className="result-posted">{formatPosted(position.postedTs)}</span>
+                        </div>
+                        <h3 className="result-title">{position.name || "—"}</h3>
+                        <p className="result-location" title={formatLocations(position.locations, 99)}>
+                          {formatLocations(position.locations)}
+                        </p>
                       </div>
-                      <h3 className="result-title">{position.name || "—"}</h3>
-                      <p className="result-location" title={formatLocations(position.locations, 99)}>
-                        {formatLocations(position.locations)}
-                      </p>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
 
               {!isLoading && positions.length === 0 && (
                 <div className="empty-state" role="status">
@@ -779,8 +902,10 @@ export default function App() {
                     page - 1,
                     appliedCompany,
                     appliedQuery,
+                    appliedSearchMode,
                     appliedPostedWithin,
                     appliedJobType,
+                    appliedJobLevel,
                     appliedCountry,
                     appliedRegion,
                     appliedCity
@@ -802,8 +927,10 @@ export default function App() {
                     page + 1,
                     appliedCompany,
                     appliedQuery,
+                    appliedSearchMode,
                     appliedPostedWithin,
                     appliedJobType,
+                    appliedJobLevel,
                     appliedCountry,
                     appliedRegion,
                     appliedCity
@@ -820,22 +947,27 @@ export default function App() {
       {isModalOpen && (
         <div className="modal-backdrop" onClick={closeModal} role="presentation">
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <button className="modal-close" onClick={closeModal} type="button">
-              Close
-            </button>
+            {(detailsLoading || detailsError || !jobDetails) && (
+              <div className="modal-topbar">
+                <button className="modal-close" onClick={closeModal} type="button">
+                  Close
+                </button>
+              </div>
+            )}
 
             {detailsLoading && <p className="loading-state">Loading details...</p>}
             {detailsError && <div className="alert-error">{detailsError}</div>}
 
             {!detailsLoading && !detailsError && jobDetails && (
               <div className="details-content">
-                <h3>{detailsName}</h3>
-                <div className="details-meta">
-                  <span>{detailsCompanyLabel}</span>
-                  <span>Posted: {formatPosted(detailsPostedTs)}</span>
+                <div className="details-header">
+                  <h3>{detailsName}</h3>
+                  <button className="modal-close" onClick={closeModal} type="button">
+                    Close
+                  </button>
                 </div>
 
-                {(detailsPageHref || applyHref) && (
+                {(detailsPageHref || applyHref || detailsPostedTs) && (
                   <div className="details-actions">
                     {detailsPageHref && (
                       <a
@@ -867,7 +999,20 @@ export default function App() {
                         Open posting
                       </a>
                     )}
+                    {detailsPostedTs && <div className="details-posted">{formatPosted(detailsPostedTs)}</div>}
                   </div>
+                )}
+
+                <section className="details-section">
+                  <h4>Company</h4>
+                  <p className="details-value">{detailsCompanyLabel}</p>
+                </section>
+
+                {detailsJobLevel && (
+                  <section className="details-section">
+                    <h4>Level</h4>
+                    <p className="details-value">{toTitleCase(detailsJobLevel)}</p>
+                  </section>
                 )}
 
                 {detailsLocations.length > 0 && (

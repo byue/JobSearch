@@ -460,7 +460,18 @@ class WebBackendIntegrationTest(unittest.TestCase):
         self.assertGreaterEqual(len(jobs_body["jobs"]), 1)
         self.assertEqual(
             set(jobs_body["jobs"][0].keys()),
-            {"id", "runId", "name", "company", "jobCategory", "locations", "postedTs", "applyUrl", "detailsUrl"},
+            {
+                "id",
+                "runId",
+                "name",
+                "company",
+                "jobCategory",
+                "jobLevel",
+                "locations",
+                "postedTs",
+                "applyUrl",
+                "detailsUrl",
+            },
         )
         if jobs_body["jobs"][0]["locations"]:
             self.assertEqual(set(jobs_body["jobs"][0]["locations"][0].keys()), {"country", "state", "city"})

@@ -9,6 +9,7 @@ from typing import Any
 from lxml import html as lxml_html
 
 from scrapers.airflow.clients.common.html_text import extract_text
+from scrapers.airflow.clients.common.job_levels import get_normalized_job_level
 from common.job_taxonomy import infer_job_category_from_title
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
@@ -90,6 +91,7 @@ def parse_job_metadata(
         name=name,
         company="microsoft",
         jobCategory=infer_job_category_from_title(title=name),
+        jobLevel=get_normalized_job_level(name or "", "microsoft"),
         locations=list(locations or []),
         postedTs=posted_ts,
         detailsUrl=build_details_url(

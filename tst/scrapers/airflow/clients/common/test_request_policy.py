@@ -1,9 +1,13 @@
 import unittest
 
 from common.request_policy import RequestPolicy
+from scrapers.airflow.clients.common.request_policy import RequestPolicy as ClientRequestPolicy
 
 
 class RequestPolicyTest(unittest.TestCase):
+    def test_client_wrapper_reexports_common_request_policy(self) -> None:
+        self.assertIs(ClientRequestPolicy, RequestPolicy)
+
     def test_defaults(self) -> None:
         policy = RequestPolicy(timeout_seconds=3.0, max_retries=4)
         self.assertEqual(policy.timeout_seconds, 3.0)

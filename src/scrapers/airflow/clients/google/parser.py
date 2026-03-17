@@ -9,6 +9,7 @@ from typing import Any
 
 from common.job_taxonomy import infer_job_category_from_title
 from scrapers.airflow.clients.common.html_text import extract_text
+from scrapers.airflow.clients.common.job_levels import get_normalized_job_level
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 _DS1_PATTERN = re.compile(
@@ -75,6 +76,7 @@ def parse_job_metadata(
         name=name,
         company="google",
         jobCategory=infer_job_category_from_title(title=name),
+        jobLevel=get_normalized_job_level(name or "", "google"),
         locations=list(locations or []),
         postedTs=posted_ts,
         applyUrl=apply_url,

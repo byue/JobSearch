@@ -14,6 +14,7 @@ import requests
 from features.client import FeaturesClient
 from scrapers.airflow.clients.common.base import JobsClient
 from scrapers.airflow.clients.common.html_text import extract_text
+from scrapers.airflow.clients.common.job_levels import get_normalized_job_level
 from common.job_taxonomy import infer_job_category_from_title
 from common.request_policy import RequestPolicy
 from scrapers.airflow.clients.common.http_requests import build_get_url, request_json_with_backoff, request_text_with_backoff
@@ -367,6 +368,7 @@ class NetflixJobsClient(JobsClient):
             name=name,
             company="netflix",
             jobCategory=infer_job_category_from_title(title=name),
+            jobLevel=get_normalized_job_level(name or "", "netflix"),
             locations=list(locations or []),
             postedTs=posted_ts,
             detailsUrl=details_url,

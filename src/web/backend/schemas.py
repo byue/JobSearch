@@ -24,8 +24,10 @@ class GetJobsRequest(BaseModel):
 
     company: str | None = None
     query: str | None = None
+    search_mode: str | None = None
     posted_within: str | None = None
     job_type: str | None = None
+    job_level: str | None = None
     country: str | None = None
     region: str | None = None
     city: str | None = None
@@ -42,6 +44,7 @@ class JobMetadata(BaseModel):
     name: str | None = None
     company: str | None = None
     jobCategory: str | None = None
+    jobLevel: str | None = None
     locations: list[Location] = Field(default_factory=list)
     postedTs: int | None = None
     applyUrl: str | None = None

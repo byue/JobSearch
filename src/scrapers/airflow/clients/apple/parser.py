@@ -11,6 +11,7 @@ from typing import Any
 
 from common.job_taxonomy import infer_job_category_from_title
 from scrapers.airflow.clients.common.html_text import extract_text
+from scrapers.airflow.clients.common.job_levels import get_normalized_job_level
 from web.backend.schemas import JobDetailsSchema, JobMetadata, Location
 
 _HYDRATION_PATTERN = re.compile(
@@ -87,6 +88,7 @@ def parse_job_metadata(
         name=name,
         company="apple",
         jobCategory=infer_job_category_from_title(title=name),
+        jobLevel=get_normalized_job_level(name or "", "apple"),
         locations=list(locations or []),
         postedTs=parse_posted_ts(payload.get("postDateInGMT")) or parse_posting_date(payload.get("postingDate")),
         detailsUrl=build_details_url(base_url=base_url, locale=locale, job_id=job_id, transformed_title=transformed_title),
